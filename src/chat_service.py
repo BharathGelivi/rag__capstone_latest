@@ -456,7 +456,7 @@ def _run_chat_turn(
 
     from experiments.exp06_strategy_ablation import ARMS
     config = ARMS[arm]
-    retrieval_result.retrieval_metadata.update({"corpus": corpus, "arm": arm,
+    retrieval_result.retrieval_metadata.update({"corpus": corpus, "arm": arm, "search_query": search_query,
         "registry_path": CORPORA[pipeline_corpus][0] if pipeline_corpus in CORPORA else None,
         "chunking_strategy": config["chunking"], "retrieval_mode": config["mode"],
         "bm25_enabled": config["mode"] in ("hybrid", "bm25"), "reranker_enabled": config["rerank"]})
@@ -526,11 +526,12 @@ def _run_chat_turn(
     )
     # Memory provenance travels with the trace -- without it the turn is not
     # reproducible (the answer depended on state only the memory DB held).
-    trace.diagnostics = {
+    trace.diagnostics.update({
         "retrieval_metadata": retrieval_result.retrieval_metadata,
         "memory_ids": [r.memory.memory_id for r in memory_results],
         "memory_kinds": [r.memory.kind for r in memory_results],
-    }
+        "memory_evidence": [vars(c) for c in memory_evidence_chunks([r.memory for r in memory_results])],
+    })
     trace_path = RAGTraceBuilder.save_to_json(trace)
 
     strategy_event = {

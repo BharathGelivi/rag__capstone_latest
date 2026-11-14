@@ -237,6 +237,7 @@ export interface ClaimVerification {
 export interface TraceData {
   trace_id: string;
   question: string;
+  generated_answer: string;
   timestamp: string;
   prompt_snapshot: string;
   execution_statistics: Record<string, unknown>;
@@ -246,6 +247,44 @@ export interface TraceData {
   // chat_service.py's post-hoc patch of the saved trace file.
   claim_verification?: { claim_count: number; results: ClaimVerification[] };
   claim_error?: string;
+}
+
+export interface ReplaySettings {
+  system_prompt: string; model: string; arm: string; corpus: string; top_k: number;
+}
+export interface ReplayResult {
+  original: TraceData;
+  replay: TraceData;
+  warnings: string[];
+  comparison: {
+    evidence_added: string[]; evidence_removed: string[];
+    evidence_order_changed: boolean; answer_changed: boolean;
+    claim_changes?: Array<{claim_text: string; original_status: string | null; replay_status: string | null}> | null;
+    scores: Record<"original" | "replay", {claim_count: number; supported_fraction: number | null; statuses: Record<string, number>}>;
+  };
+}
+
+async function replayResponse<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE}${url}`, init);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(typeof body.detail === "string" ? body.detail : `Replay request failed (HTTP ${response.status})`);
+  }
+  return response.json();
+}
+export function getSavedTraces(signal?: AbortSignal): Promise<Array<{trace_id: string; question: string; timestamp: string}>> {
+  return replayResponse("/ui/traces", {signal});
+}
+export function getReplaySettings(traceId: string, signal?: AbortSignal): Promise<ReplaySettings> {
+  return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/replay`, {signal});
+}
+export function replayTrace(traceId: string, options: {
+  mode: "frozen" | "retrieve"; model?: string; system_prompt?: string;
+  arm?: string; corpus?: string; top_k?: number; verify_claims: boolean;
+}, signal?: AbortSignal): Promise<ReplayResult> {
+  return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/replay`, {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(options), signal,
+  });
 }
 
 export async function getLatestTrace(signal?: AbortSignal): Promise<TraceData | null> {

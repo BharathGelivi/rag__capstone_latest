@@ -133,3 +133,41 @@ class TestUIEndToEnd(unittest.TestCase):
         self.page.get_by_role("button", name="Memory", exact=True).click()
         self.page.wait_for_selector('[role="alert"]')
         self.assertIn("Unable to load memories", self.page.get_by_role("alert").inner_text())
+
+    def test_replay_sends_only_changed_settings_and_renders_comparison(self):
+        self.page.unroute("http://127.0.0.1:8010/**")
+        requests = []
+        trace = {"trace_id": "original", "question": "Fixture question", "timestamp": "2026-11-15",
+                 "generated_answer": "Original answer", "prompt_snapshot": "Captured prompt",
+                 "configuration_snapshot": {"llm_model": "fixture/model"},
+                 "execution_statistics": {"retrieval_time": 1, "generation_time": 2, "total_pipeline_time": 3},
+                 "retrieved_chunk_references": [{"chunk_id": "c1", "text": "Original evidence", "rank": 1,
+                    "source_file": "fixture.pdf", "page_number": 1, "similarity_score": .9}]}
+        def routes(route):
+            path = route.request.url.split("8010")[-1]
+            if path == "/ui/traces":
+                route.fulfill(json=[{k: trace[k] for k in ("trace_id", "question", "timestamp")}])
+            elif path == "/ui/trace/original/replay" and route.request.method == "GET":
+                route.fulfill(json={"system_prompt": "Original instructions", "model": "fixture/model",
+                                    "corpus": "statutes", "arm": "C_hybrid_rerank", "top_k": 1})
+            elif path == "/ui/trace/original/replay":
+                requests.append(route.request.post_data_json)
+                scores = {"claim_count": 0, "supported_fraction": None, "statuses": {}}
+                route.fulfill(json={"original": trace,
+                    "replay": {**trace, "trace_id": "child", "generated_answer": "Changed answer"},
+                    "warnings": ["Remote outputs may vary."], "comparison": {"answer_changed": True,
+                    "evidence_added": [], "evidence_removed": [], "evidence_order_changed": False,
+                    "scores": {"original": scores, "replay": scores}}})
+            else:
+                self.fixture(route)
+        self.page.route("http://127.0.0.1:8010/**", routes)
+        self.page.goto("http://127.0.0.1:5173")
+        self.page.get_by_role("button", name="Debug", exact=True).click()
+        self.page.get_by_label("Saved trace", exact=True).select_option("original")
+        self.page.get_by_label("System prompt", exact=True).fill("New instructions")
+        self.page.get_by_label("Verify replay claims").uncheck()
+        self.page.get_by_role("button", name="Run replay", exact=True).click()
+        self.page.get_by_role("heading", name="Original vs replay").wait_for()
+        self.assertIn("Changed answer", self.page.get_by_label("Replay comparison").inner_text())
+        self.assertIn("Original answer", self.page.get_by_label("Replay comparison").inner_text())
+        self.assertEqual(requests, [{"mode": "frozen", "verify_claims": False, "system_prompt": "New instructions"}])

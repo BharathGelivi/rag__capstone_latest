@@ -100,7 +100,7 @@ def materialise(chunk_ids, registry):
     return out
 
 
-def execute_arm(arm: str, question_text: str, registry, retriever, graph, llm):
+def execute_arm(arm: str, question_text: str, registry, retriever, graph, llm, top_n=None):
     """Run one arm's retrieval. Returns ``(chunks, retrieval_metadata, graph_added)``.
 
     Single definition of what each arm *is*, imported by E6 (retrieval
@@ -116,11 +116,11 @@ def execute_arm(arm: str, question_text: str, registry, retriever, graph, llm):
 
     if config["strategy"] == "plain":
         result = retriever.retrieve(question_text, mode=config["mode"],
-                                    rerank=config["rerank"], top_n=BASE_TOP_N)
+                                    rerank=config["rerank"], top_n=top_n or BASE_TOP_N)
     elif config["strategy"] == "ircot":
         result = IRCoTRetriever(retriever, llm, retrieval_mode=config["mode"],
                                 rerank=config["rerank"],
-                                first_hop_top_n=BASE_TOP_N).retrieve(question_text)
+                                first_hop_top_n=top_n or BASE_TOP_N).retrieve(question_text)
     elif config["strategy"] == "agentic":
         result = AgenticRetriever(
             retriever, llm, graph=graph if config.get("graph") else None,
@@ -150,4 +150,4 @@ def execute_arm(arm: str, question_text: str, registry, retriever, graph, llm):
         chunks += materialise(new, registry)
         graph_added += len(new)
 
-    return chunks, result.retrieval_metadata, graph_added
+    return chunks[:top_n] if top_n is not None else chunks, result.retrieval_metadata, graph_added

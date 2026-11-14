@@ -2613,7 +2613,7 @@
     },
     {
       "path": "frontend/src/App.css",
-      "sha256": "dc3d60bf41fb9b00fd4cbac9be0e1152ca520ffcdbca3a651fc27b16cd1d9abf",
+      "sha256": "e6483fa1c68b5c81788387e19fb63fc520d0e893f9ca4c43e4f89cbea88da2ff",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -2684,7 +2684,7 @@
     },
     {
       "path": "frontend/src/components/Debug.tsx",
-      "sha256": "882d1ec31263a843a54d32c8e40fc5bed0e6ddf1dc451c9c1139c466ccbbf25d",
+      "sha256": "5386dbb1896b9154b0d9b792b403f353cf84a5349af4a39732379673b34b6887",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -2695,6 +2695,7 @@
         "../App",
         "../lib/api",
         "./EvidenceExplorer",
+        "./TraceReplay",
         "react"
       ],
       "configuration_dependencies": [],
@@ -2840,6 +2841,29 @@
       "artifact_outputs": []
     },
     {
+      "path": "frontend/src/components/TraceReplay.tsx",
+      "sha256": "13a6918763bfc8d4a3f96794478d06b31d6945b417904af291a3a9950a968105",
+      "purpose": "See symbols and dependencies; no source docstring.",
+      "classes": [],
+      "functions": [],
+      "public_apis": [
+        "TraceReplay"
+      ],
+      "imports": [
+        "../lib/api",
+        "./EvidenceExplorer",
+        "react"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [],
+      "endpoints": [],
+      "depends_on": [],
+      "depended_on_by": [],
+      "tests": [],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
       "path": "frontend/src/design-system.css",
       "sha256": "3200ab250952c053fb026ce070c1a696b111be5fae3fc864e86989ebcd270d3f",
       "purpose": "See symbols and dependencies; no source docstring.",
@@ -2875,7 +2899,7 @@
     },
     {
       "path": "frontend/src/lib/api.ts",
-      "sha256": "51b469e438dcf1db5e1f0fbd76fc96fd5b7f2dec9f1c47d264801aa27b02474a",
+      "sha256": "21849f5af11e01298737cb5ab02b0f0da9e14d6b95d49a12b721d52728483623",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -2894,6 +2918,11 @@
         "TraceChunkReference",
         "ClaimVerification",
         "TraceData",
+        "ReplaySettings",
+        "ReplayResult",
+        "getSavedTraces",
+        "getReplaySettings",
+        "replayTrace",
         "FrameworkMetric",
         "FrameworkFamily",
         "FrameworkPanel",
@@ -5405,6 +5434,7 @@
         "src/memory_graph.py",
         "src/ragas_metrics.py",
         "src/trace_metrics.py",
+        "src/trace_replay.py",
         "tests/test_api_ui.py",
         "tests/test_trace_metrics.py"
       ],
@@ -5998,129 +6028,144 @@
     },
     {
       "path": "src/api_ui.py",
-      "sha256": "d6be7a9fb4feecb49b0b3c3a1cf93e1cde09e215ad06ad43d8e2e73004bc2a99",
+      "sha256": "fe57e8865aeb149e10507dd49dd0dff8bf83574333f2475c743bd92e2ed33ca2",
       "purpose": "FastAPI backend for the React UI: chat (SSE), graphs, sessions.\n\nThin transport over existing implementations -- chat_service.run_chat_turn,\nui/components/graph.py's build_graph_data, src/memory_graph.py's\nbuild_memory_graph_data, and MemoryManager. No pipeline logic lives here.",
       "classes": [
         {
           "name": "ChatRequest",
-          "line": 46,
+          "line": 47,
           "purpose": ""
         },
         {
           "name": "SessionCreateRequest",
-          "line": 73,
+          "line": 74,
           "purpose": ""
         },
         {
           "name": "SessionRenameRequest",
-          "line": 153,
+          "line": 154,
           "purpose": ""
         }
       ],
       "functions": [
         {
           "name": "get_config",
-          "line": 78,
+          "line": 79,
           "purpose": ""
         },
         {
           "name": "chat",
-          "line": 93,
+          "line": 94,
           "purpose": "SSE stream. Declared as a sync `def` (not `async def`) so the blocking\npipeline runs in Starlette's threadpool instead of the event loop --\notherwise one slow turn would freeze every other route."
         },
         {
           "name": "graph",
-          "line": 114,
+          "line": 115,
           "purpose": ""
         },
         {
           "name": "list_sessions",
-          "line": 142,
+          "line": 143,
           "purpose": ""
         },
         {
           "name": "create_session",
-          "line": 148,
+          "line": 149,
           "purpose": ""
         },
         {
           "name": "rename_session",
-          "line": 158,
+          "line": 159,
           "purpose": ""
         },
         {
           "name": "get_session_messages",
-          "line": 166,
+          "line": 167,
           "purpose": "Reload a session's turns for the message list.\n\nOnly ``role``/``content`` survive a turn's live SSE stream into permanent\nstorage -- the chunks, timings and eval scores the UI showed while the\nturn was in flight only ever existed in the frontend's in-memory state,\nso a page reload or navigating away from Chat and back used to make a\nturn's Details panel vanish for good even though the answer's own\ncitations were still sitting right there in the text. ``trace_id`` is\nthe one durable link back to that data (see ``/ui/trace/{trace_id}``,\nwhich reads the full RAGTrace JSON saved alongside it) -- returning it\nhere lets the frontend re-fetch and rebuild the Details panel on demand."
         },
         {
           "name": "delete_session",
-          "line": 193,
+          "line": 194,
           "purpose": ""
         },
         {
           "name": "list_memory",
-          "line": 201,
+          "line": 202,
           "purpose": "Memory page data. With ``search``, ranks via MemoryManager.search_memory\n(semantic/recency/frequency/importance all populated). Without it, this is\na plain recency listing -- those per-query scores don't exist outside a\nsearch, so only ``importance_score`` (intrinsic to the memory) is set and\nthe rest come back 0."
         },
         {
           "name": "memory_health",
-          "line": 234,
+          "line": 235,
           "purpose": "Return memory persistence health without mutating the store."
         },
         {
           "name": "latest_trace",
-          "line": 240,
+          "line": 241,
           "purpose": ""
         },
         {
           "name": "get_trace",
-          "line": 248,
+          "line": 249,
           "purpose": ""
         },
         {
           "name": "trace_metrics",
-          "line": 298,
+          "line": 295,
           "purpose": "On-demand framework comparison panel for one saved turn.\n\nComputes the 13-metric panel (RAGAS-/RAGChecker-/ARES-style families,\neach with per-metric provenance) for the saved trace, running claim\ndecomposition + NLI verification on demand if the turn wasn't produced\nwith deep analysis. Results are cached per trace id -- each call after\nthe first is free."
         },
         {
+          "name": "saved_traces",
+          "line": 311,
+          "purpose": ""
+        },
+        {
+          "name": "replay_settings",
+          "line": 316,
+          "purpose": ""
+        },
+        {
+          "name": "replay_saved_trace",
+          "line": 331,
+          "purpose": ""
+        },
+        {
           "name": "list_diagnostic_reports",
-          "line": 314,
+          "line": 347,
           "purpose": "List generated HTML diagnostic reports for the report browser."
         },
         {
           "name": "download_diagnostic_report",
-          "line": 331,
+          "line": 364,
           "purpose": "Download one report while rejecting traversal and non-HTML files."
         },
         {
           "name": "list_experiment_runs",
-          "line": 341,
+          "line": 374,
           "purpose": "Return ordered experiment status and the latest reproducibility envelope."
         },
         {
           "name": "_experiment_directory",
-          "line": 374,
+          "line": 407,
           "purpose": ""
         },
         {
           "name": "experiment_detail",
-          "line": 387,
+          "line": 420,
           "purpose": ""
         },
         {
           "name": "_read_latest_trace_file",
-          "line": 413,
+          "line": 446,
           "purpose": ""
         },
         {
           "name": "validate_options",
-          "line": 56,
+          "line": 57,
           "purpose": ""
         },
         {
           "name": "sse_events",
-          "line": 98,
+          "line": 99,
           "purpose": ""
         }
       ],
@@ -6141,6 +6186,9 @@
         "latest_trace",
         "get_trace",
         "trace_metrics",
+        "saved_traces",
+        "replay_settings",
+        "replay_saved_trace",
         "list_diagnostic_reports",
         "download_diagnostic_report",
         "list_experiment_runs",
@@ -6166,6 +6214,7 @@
         "fastapi.responses.StreamingResponse",
         "glob",
         "json",
+        "logging",
         "os",
         "pydantic",
         "pydantic.BaseModel",
@@ -6184,6 +6233,13 @@
         "src.strategy_arms.ARMS",
         "src.trace_metrics",
         "src.trace_metrics.compute_framework_panel",
+        "src.trace_replay",
+        "src.trace_replay.ReplayOptions",
+        "src.trace_replay.captured_messages",
+        "src.trace_replay.editable_prompt",
+        "src.trace_replay.load_trace",
+        "src.trace_replay.replay_trace",
+        "src.trace_replay.trace_choices",
         "sys",
         "typing",
         "typing.Any",
@@ -6192,7 +6248,8 @@
         "typing.Optional",
         "ui.components.graph",
         "ui.components.graph.build_graph_data",
-        "ui.components.graph.build_legal_graph_data"
+        "ui.components.graph.build_legal_graph_data",
+        "uuid"
       ],
       "configuration_dependencies": [],
       "artifact_references": [],
@@ -6264,6 +6321,21 @@
         },
         {
           "method": "GET",
+          "route": "'/ui/traces'",
+          "handler": "saved_traces"
+        },
+        {
+          "method": "GET",
+          "route": "'/ui/trace/{trace_id}/replay'",
+          "handler": "replay_settings"
+        },
+        {
+          "method": "POST",
+          "route": "'/ui/trace/{trace_id}/replay'",
+          "handler": "replay_saved_trace"
+        },
+        {
+          "method": "GET",
           "route": "'/ui/reports'",
           "handler": "list_diagnostic_reports"
         },
@@ -6294,15 +6366,18 @@
         "src/memory_graph.py",
         "src/strategy_arms.py",
         "src/trace_metrics.py",
+        "src/trace_replay.py",
         "ui/components/graph.py"
       ],
       "depended_on_by": [
         "tests/test_api_ui.py",
-        "tests/test_audit_regressions.py"
+        "tests/test_audit_regressions.py",
+        "tests/test_trace_replay.py"
       ],
       "tests": [
         "tests/test_api_ui.py",
-        "tests/test_audit_regressions.py"
+        "tests/test_audit_regressions.py",
+        "tests/test_trace_replay.py"
       ],
       "artifact_inputs": [],
       "artifact_outputs": []
@@ -6365,7 +6440,7 @@
     },
     {
       "path": "src/chat_service.py",
-      "sha256": "2410fd185d8d26a9b8b37b57e061296c501bd416c4d984bd7a3bae4d0d3c672d",
+      "sha256": "52c7f17b795f7d2421d96a0b378a0181595bd699064ab9fe25ba2021463d1b87",
       "purpose": "Chat pipeline as a plain function, decoupled from Streamlit.\n\nThis is `ui/app.py`'s `run_rag_pipeline()` (:235-475) with every\n`st.session_state`/`st.cache_resource` reference replaced by explicit\narguments and `functools.lru_cache`, so the same orchestration can be called\nfrom `src/api_ui.py` for the React UI as well as from Streamlit. The 7 steps\n(memory retrieval, query condensing, execute_arm retrieval, generation,\nRAGTrace build, claim decomposition, NLI verification) are unchanged.",
       "classes": [],
       "functions": [
@@ -6446,7 +6521,7 @@
         },
         {
           "name": "cosine_sim",
-          "line": 590,
+          "line": 591,
           "purpose": ""
         }
       ],
@@ -6551,6 +6626,7 @@
         "src/api_ui.py",
         "src/memory_graph.py",
         "src/trace_metrics.py",
+        "src/trace_replay.py",
         "tests/test_api_ui.py"
       ],
       "tests": [
@@ -8011,7 +8087,7 @@
     },
     {
       "path": "src/generator.py",
-      "sha256": "b9f93c800a4d077830d367050139480983139aec7f10aae98e92340c6906fd0b",
+      "sha256": "07409eadb51465029bf012eb6e469d70351e3932eac944a2c8d38318c8e8c46e",
       "purpose": "Generator Module.\n\nResponsible exclusively for synthesizing answers using an LLM based on the\ncontext provided by the Retriever.  All calls route through the NVIDIA NIM\nOpenAI-compatible inference endpoint via ``llama_index.llms.openai_like.OpenAILike``.\n\nDesign notes\n------------\n- ``PromptBuilder`` is fully isolated from ``Generator`` so prompt variants can\n  be swapped or A/B-tested without touching generation logic.\n- Context chunks are presented in *reversed* rank order so the highest-scoring\n  chunk appears immediately before the question (recency bias fix, Liu et al. 2023).\n- ``generate()`` accepts an optional ``system_instructions`` kwarg for runtime\n  domain switching — the API layer or a query router can inject domain-specific\n  instructions per request without restarting the process.",
       "classes": [
         {
@@ -8078,17 +8154,17 @@
         },
         {
           "name": "generate_stream",
-          "line": 376,
+          "line": 378,
           "purpose": "Yield answer text incrementally, then expose the full result.\n\nGeneration is the longest stage in the pipeline (20-70s against the\nremote endpoint) and nothing local can make the model faster. Streaming\ndoes not reduce total time, but it moves time-to-first-token to ~1s, so\nthe user reads the answer while it is still being produced instead of\nwatching a spinner.\n\nWith ``reasoning=False`` (the default) this yields plain ``str``\ndeltas, unchanged from before. With ``reasoning=True`` it instructs\nthe model to emit a ``<thinking>...</thinking><answer>...</answer>``\ncompletion (see ``THINK_ALOUD_INSTRUCTIONS``) and yields\n``(kind, delta)`` tuples instead, ``kind`` being ``\"reasoning\"`` or\n``\"answer\"``. ``last_stream_result.generated_answer`` always holds\nonly the answer text either way -- callers that parse it for\ncitations, or persist it to memory, never see the thinking block. If\nthe model ignores the tag instruction and free-forms a response\nanyway, the whole output degrades to the answer rather than being\nlost.\n\nAfter the iterator is exhausted, ``last_stream_result`` holds the\nassembled :class:`GenerationResult` for the rest of the pipeline."
         },
         {
           "name": "_needs_condensing",
-          "line": 537,
+          "line": 542,
           "purpose": "Heuristic: does this question depend on the conversation?"
         },
         {
           "name": "condense_query",
-          "line": 549,
+          "line": 554,
           "purpose": "Rewrite a follow-up question into a standalone retrieval query.\n\nRetrieval is stateless — embedding \"can you elaborate on that?\" matches\nnothing useful because the referent lives in the previous turn. This\nresolves the reference before retrieval runs.\n\nFalls back to the original question on any failure: a degraded query is\nstrictly worse than the original, so condensation must never be able to\nbreak the pipeline."
         }
       ],
@@ -8169,13 +8245,16 @@
         "src/rag_trace.py",
         "src/runner.py",
         "src/trace_metrics.py",
+        "src/trace_replay.py",
         "tests/test_generator.py",
         "tests/test_rag_trace.py",
+        "tests/test_trace_replay.py",
         "ui/app.py"
       ],
       "tests": [
         "tests/test_generator.py",
-        "tests/test_rag_trace.py"
+        "tests/test_rag_trace.py",
+        "tests/test_trace_replay.py"
       ],
       "artifact_inputs": [],
       "artifact_outputs": []
@@ -10491,7 +10570,7 @@
     },
     {
       "path": "src/rag_trace.py",
-      "sha256": "e2bd46233c8863fa19fdcfdbaa9150c5dcfe1df344ac8b06162fb9a71e0e607f",
+      "sha256": "ee250831a9f8cceb342c0a694c2c40c4c9a2ec8d56186fc7bb01703569689fc8",
       "purpose": "RAGTrace Module.\n\nProvides the RAGTrace dataclass and RAGTraceBuilder to construct\nand serialize an execution record of a RAG pipeline run.",
       "classes": [
         {
@@ -10523,7 +10602,7 @@
         },
         {
           "name": "save_to_json",
-          "line": 165,
+          "line": 166,
           "purpose": "Saves a RAGTrace to a date-partitioned JSON file.\nReturns the path to the saved file."
         }
       ],
@@ -10600,6 +10679,7 @@
         "src/report_builder.py",
         "src/runner.py",
         "src/trace_metrics.py",
+        "src/trace_replay.py",
         "tests/test_api.py",
         "tests/test_audit_regressions.py",
         "tests/test_baseline_adapters_common.py",
@@ -10611,6 +10691,7 @@
         "tests/test_ragas_adapter.py",
         "tests/test_report_builder.py",
         "tests/test_trace_metrics.py",
+        "tests/test_trace_replay.py",
         "ui/app.py"
       ],
       "tests": [
@@ -10624,7 +10705,8 @@
         "tests/test_rag_trace.py",
         "tests/test_ragas_adapter.py",
         "tests/test_report_builder.py",
-        "tests/test_trace_metrics.py"
+        "tests/test_trace_metrics.py",
+        "tests/test_trace_replay.py"
       ],
       "artifact_inputs": [
         "retrieval result",
@@ -11349,6 +11431,7 @@
         "src/rag_trace.py",
         "src/ragas_metrics.py",
         "src/strategy_arms.py",
+        "src/trace_replay.py",
         "tests/test_claim_verifier.py",
         "tests/test_experiments.py",
         "tests/test_generator.py",
@@ -11645,7 +11728,7 @@
     },
     {
       "path": "src/strategy_arms.py",
-      "sha256": "c825514d3fb025267c40e235602f734e55258bad075db6d371863d7a1f67dbe2",
+      "sha256": "a2f6485bb9541b701e0cc979f753918239936ba9d95fd6a5846474bc04593aa9",
       "purpose": "Retrieval-strategy arms: the single catalogue of retrieval strategies the\nsystem can run.\n\nThis module is why a chat turn and the E6 ablation cannot drift apart: the UI\n(``src/chat_service.py``) and the experiment suite (``experiments/exp06…``)\nboth execute arms through the one ``execute_arm`` defined here, over one\n``ARMS`` table. The table used to live inside ``experiments/exp06…``, which\nforced production code (the UI backend) to import from the experiment\npackage -- wrong dependency direction, and exactly the kind of coupling that\nlets \"the shipped pipeline\" and \"the measured pipeline\" silently become two\ndifferent things.\n\nArms\n----\n    A_vector                dense bi-encoder only\n    A_bm25                  lexical only\n    B_hybrid                dense + BM25, RRF fused, no reranker\n    C_hybrid_rerank         + cross-encoder reranker      (the shipped pipeline)\n    C_fixed_chunking        identical to C, over fixed-size chunks\n    D_ircot                 interleaved retrieval/reasoning over C\n    E_agentic               bounded controller over C, no graph\n    F_graphrag              C, then citation-graph expansion\n    G_ircot_graph           D, then citation-graph expansion\n    H_agentic_graph         controller with graph actions enabled\n    I_full                  IRCoT + graph expansion + contradiction search\n\nEvery arm but ``C_fixed_chunking`` runs over the legal-chunked corpus, so\nchunking is isolated to exactly one comparison (C vs C_fixed_chunking) rather\nthan confounded with everything else.",
       "classes": [],
       "functions": [
@@ -11703,6 +11786,7 @@
         "experiments/exp06_strategy_ablation.py",
         "src/api_ui.py",
         "src/chat_service.py",
+        "src/trace_replay.py",
         "ui/app.py"
       ],
       "tests": [],
@@ -11805,6 +11889,135 @@
       ],
       "tests": [
         "tests/test_trace_metrics.py"
+      ],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
+      "path": "src/trace_replay.py",
+      "sha256": "a29d3c66f54859bad9a7716d635d0bed1c902367ed965fe3c8c3f285e21dcde9",
+      "purpose": "Replay saved traces without consulting mutable memory or modifying the source.",
+      "classes": [
+        {
+          "name": "ReplayOptions",
+          "line": 21,
+          "purpose": ""
+        }
+      ],
+      "functions": [
+        {
+          "name": "load_trace",
+          "line": 42,
+          "purpose": ""
+        },
+        {
+          "name": "captured_messages",
+          "line": 54,
+          "purpose": ""
+        },
+        {
+          "name": "captured_chunks",
+          "line": 67,
+          "purpose": ""
+        },
+        {
+          "name": "editable_prompt",
+          "line": 86,
+          "purpose": ""
+        },
+        {
+          "name": "trace_choices",
+          "line": 91,
+          "purpose": ""
+        },
+        {
+          "name": "_view",
+          "line": 107,
+          "purpose": ""
+        },
+        {
+          "name": "_scores",
+          "line": 120,
+          "purpose": ""
+        },
+        {
+          "name": "_claim_changes",
+          "line": 129,
+          "purpose": ""
+        },
+        {
+          "name": "replay_trace",
+          "line": 142,
+          "purpose": ""
+        },
+        {
+          "name": "valid_changes",
+          "line": 32,
+          "purpose": ""
+        }
+      ],
+      "public_apis": [
+        "ReplayOptions",
+        "load_trace",
+        "captured_messages",
+        "captured_chunks",
+        "editable_prompt",
+        "trace_choices",
+        "replay_trace",
+        "valid_changes"
+      ],
+      "imports": [
+        "copy",
+        "copy.deepcopy",
+        "dataclasses",
+        "dataclasses.asdict",
+        "hashlib",
+        "json",
+        "llama_index.core.llms",
+        "llama_index.core.llms.ChatMessage",
+        "pathlib",
+        "pathlib.Path",
+        "pydantic",
+        "pydantic.BaseModel",
+        "pydantic.ConfigDict",
+        "pydantic.Field",
+        "pydantic.model_validator",
+        "re",
+        "src",
+        "src.chat_service",
+        "src.generator",
+        "src.generator.Generator",
+        "src.generator.PromptBuilder",
+        "src.rag_trace",
+        "src.rag_trace.RAGTrace",
+        "src.rag_trace.RAGTraceBuilder",
+        "src.retriever",
+        "src.retriever.RetrievalResult",
+        "src.retriever.RetrievedChunk",
+        "src.strategy_arms",
+        "src.strategy_arms.ARMS",
+        "src.strategy_arms.execute_arm",
+        "time",
+        "typing",
+        "typing.Literal"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [],
+      "endpoints": [],
+      "depends_on": [
+        "src/__init__.py",
+        "src/chat_service.py",
+        "src/generator.py",
+        "src/rag_trace.py",
+        "src/retriever.py",
+        "src/strategy_arms.py"
+      ],
+      "depended_on_by": [
+        "src/api_ui.py",
+        "tests/test_trace_replay.py"
+      ],
+      "tests": [
+        "tests/test_trace_replay.py"
       ],
       "artifact_inputs": [],
       "artifact_outputs": []
@@ -16976,8 +17189,12 @@
         "src/rag_trace.py",
         "src/retriever.py"
       ],
-      "depended_on_by": [],
-      "tests": [],
+      "depended_on_by": [
+        "tests/test_trace_replay.py"
+      ],
+      "tests": [
+        "tests/test_trace_replay.py"
+      ],
       "artifact_inputs": [],
       "artifact_outputs": []
     },
@@ -18441,8 +18658,150 @@
       "artifact_outputs": []
     },
     {
+      "path": "tests/test_trace_replay.py",
+      "sha256": "c7e35f285f9bb2a75d08da2f54792cf7da67c177f7e880cb6c56943783e3bc08",
+      "purpose": "See symbols and dependencies; no source docstring.",
+      "classes": [
+        {
+          "name": "TestTraceReplay",
+          "line": 31,
+          "purpose": ""
+        }
+      ],
+      "functions": [
+        {
+          "name": "source_trace",
+          "line": 18,
+          "purpose": ""
+        },
+        {
+          "name": "setUp",
+          "line": 32,
+          "purpose": ""
+        },
+        {
+          "name": "test_frozen_replay_preserves_evidence_history_and_original_file",
+          "line": 45,
+          "purpose": ""
+        },
+        {
+          "name": "test_model_and_prompt_overrides_preserve_other_messages",
+          "line": 63,
+          "purpose": ""
+        },
+        {
+          "name": "test_legacy_prompt_recovers_full_evidence_without_registry",
+          "line": 72,
+          "purpose": ""
+        },
+        {
+          "name": "test_incomplete_frozen_evidence_is_rejected_before_inference",
+          "line": 80,
+          "purpose": ""
+        },
+        {
+          "name": "test_fresh_retrieval_uses_requested_context_limit_and_diffs_ids",
+          "line": 88,
+          "purpose": ""
+        },
+        {
+          "name": "test_failed_generation_does_not_save_a_child_trace",
+          "line": 100,
+          "purpose": ""
+        },
+        {
+          "name": "test_verification_results_are_persisted_and_compared",
+          "line": 107,
+          "purpose": ""
+        },
+        {
+          "name": "test_options_and_api_validate_before_execution",
+          "line": 120,
+          "purpose": ""
+        },
+        {
+          "name": "test_invalid_corpus_strategy_pair_is_rejected",
+          "line": 130,
+          "purpose": ""
+        },
+        {
+          "name": "test_streaming_replay_preserves_answer_extraction",
+          "line": 135,
+          "purpose": ""
+        },
+        {
+          "name": "stream",
+          "line": 140,
+          "purpose": ""
+        }
+      ],
+      "public_apis": [
+        "source_trace",
+        "TestTraceReplay",
+        "setUp",
+        "test_frozen_replay_preserves_evidence_history_and_original_file",
+        "test_model_and_prompt_overrides_preserve_other_messages",
+        "test_legacy_prompt_recovers_full_evidence_without_registry",
+        "test_incomplete_frozen_evidence_is_rejected_before_inference",
+        "test_fresh_retrieval_uses_requested_context_limit_and_diffs_ids",
+        "test_failed_generation_does_not_save_a_child_trace",
+        "test_verification_results_are_persisted_and_compared",
+        "test_options_and_api_validate_before_execution",
+        "test_invalid_corpus_strategy_pair_is_rejected",
+        "test_streaming_replay_preserves_answer_extraction",
+        "stream"
+      ],
+      "imports": [
+        "fastapi.testclient",
+        "fastapi.testclient.TestClient",
+        "llama_index.core.llms",
+        "llama_index.core.llms.ChatMessage",
+        "pathlib",
+        "pathlib.Path",
+        "pydantic",
+        "pydantic.ValidationError",
+        "src.api_ui",
+        "src.api_ui.app",
+        "src.generator",
+        "src.generator.PromptBuilder",
+        "src.rag_trace",
+        "src.rag_trace.RAGTraceBuilder",
+        "src.trace_replay",
+        "src.trace_replay.ReplayOptions",
+        "src.trace_replay.captured_messages",
+        "src.trace_replay.load_trace",
+        "src.trace_replay.replay_trace",
+        "tempfile",
+        "tests.test_rag_trace",
+        "tests.test_rag_trace.make_generation_result",
+        "tests.test_rag_trace.make_retrieval_result",
+        "types",
+        "types.SimpleNamespace",
+        "unittest",
+        "unittest.mock",
+        "unittest.mock.MagicMock",
+        "unittest.mock.patch"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [
+        "artifacts/rag_traces"
+      ],
+      "endpoints": [],
+      "depends_on": [
+        "src/api_ui.py",
+        "src/generator.py",
+        "src/rag_trace.py",
+        "src/trace_replay.py",
+        "tests/test_rag_trace.py"
+      ],
+      "depended_on_by": [],
+      "tests": [],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
       "path": "tests/test_ui_e2e.py",
-      "sha256": "fc7c3c049abba9614cd8ced9cb0da2fa8a4a2f1e7d205ee3367eb0d0546e2a9b",
+      "sha256": "bd2303f822e5cb5e125c29f74793e522d095b1861a1f281615382fc016c28ed5",
       "purpose": "Browser regressions with a fully mocked backend: no models, data writes or LLM calls.\nStart the frontend on port 5173 and set XRAG_E2E=1 to opt in.",
       "classes": [
         {
@@ -18518,8 +18877,18 @@
           "purpose": ""
         },
         {
+          "name": "test_replay_sends_only_changed_settings_and_renders_comparison",
+          "line": 137,
+          "purpose": ""
+        },
+        {
           "name": "routes",
           "line": 128,
+          "purpose": ""
+        },
+        {
+          "name": "routes",
+          "line": 146,
           "purpose": ""
         }
       ],
@@ -18538,6 +18907,8 @@
         "test_graph_is_reachable_during_another_page_turn",
         "test_configuration_reports_device_and_compatible_arms",
         "test_memory_http_error_is_visible",
+        "test_replay_sends_only_changed_settings_and_renders_comparison",
+        "routes",
         "routes"
       ],
       "imports": [

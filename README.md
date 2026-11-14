@@ -1,5 +1,28 @@
 # X-RAG Diagnostic Framework
 
+## Replay and compare a saved trace
+
+Open **Debug → Replay a trace**. Select a recent trace or paste any saved
+trace ID. **Reuse original captured evidence** keeps the saved conversation
+and document context fixed while you edit the generation model or system
+prompt. **Retrieve again** lets you select a corpus, retrieval strategy and
+top-K context limit against the current index. For multi-step strategies,
+top-K caps final context; the strategy can make additional retrieval calls.
+
+Each run saves a new trace linked to its original. The comparison shows both
+answers, evidence additions/removals, claim verification, timing and settings.
+Replay never writes conversation memory or overwrites the original trace.
+The API is `POST /ui/trace/{trace_id}/replay`; send `mode: "frozen"` or
+`"retrieve"`, optional `model`/`system_prompt`, and `verify_claims` (default
+true). Retrieval options `arm`, `corpus`, and `top_k` require `retrieve` mode.
+
+Replay uses the configured NVIDIA service and may incur inference usage.
+New traces capture full evidence and structured messages. Older traces recover
+these from the saved prompt and reject frozen replay when evidence is missing.
+Provider model revisions are not pinned, so unchanged settings do not promise
+identical outputs. Claim support scores describe evidence support, not factual
+correctness; missing verification remains unmeasured.
+
 ## Start the dashboard, Archify and CodeCharta together
 
 From the repository root in **PowerShell**, after the Python environment and

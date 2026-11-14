@@ -85,6 +85,7 @@ class RAGTraceBuilder:
         for chunk in retrieval_result.retrieved_chunks:
             chunk_refs.append({
                 "chunk_id": chunk.chunk_id,
+                "text": chunk.chunk_text,
                 "rank": chunk.rank,
                 "similarity_score": chunk.similarity_score,
                 "rrf_score": getattr(chunk, "rrf_score", 0.0),

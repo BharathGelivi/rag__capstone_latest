@@ -28,6 +28,7 @@ from src import chat_service
 from src.device import describe_device
 from src.memory_graph import build_memory_graph_data
 from src.trace_metrics import compute_framework_panel
+from src.trace_replay import ReplayOptions, captured_messages, editable_prompt, load_trace, replay_trace, trace_choices
 from ui.components.graph import build_graph_data, build_legal_graph_data
 
 app = FastAPI(title="X-RAG UI backend")
@@ -262,12 +263,8 @@ def get_trace(trace_id: str):
         if key in diagnostics:
             trace[key] = diagnostics[key]
 
-    # RAGTraceBuilder records chunk_id/scores/provenance but never the chunk
-    # text itself (keeps trace files small) -- the live SSE `chunks` event is
-    # the only place that ever carried it, so a re-fetched trace would show
-    # empty chunk cards. The trace doesn't record which corpus it ran
-    # against either, so check both registries; a chunk_id collision across
-    # corpora is not realistic (they're per-ingestion UUIDs).
+    # New traces capture full evidence; backfill previews only for legacy
+    # traces so a current registry can never overwrite captured text.
     refs = trace.get("retrieved_chunk_references") or []
     if refs:
         # Captured prompt evidence remains valid when registries are replaced.
@@ -275,7 +272,7 @@ def get_trace(trace_id: str):
             r"--- Context chunk \d+ \[Chunk-ID: ([^\]]*)\] ---\n(.*?)(?=\n--- Context chunk |\n\nQuestion: |\Z)",
             trace.get("prompt_snapshot") or "", re.DOTALL))
         for ref in refs:
-            if ref.get("chunk_id") in snapshot:
+            if not ref.get("text") and ref.get("chunk_id") in snapshot:
                 ref["text"] = snapshot[ref["chunk_id"]].strip()[:400]
         corpus = (trace.get("configuration_snapshot") or {}).get("corpus")
         corpora = [corpus] if corpus in chat_service.CORPORA else chat_service.CORPORA
@@ -308,6 +305,42 @@ def trace_metrics(trace_id: str):
     if panel is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     return panel
+
+
+@app.get("/ui/traces")
+def saved_traces(limit: int = Query(50, ge=1, le=100)):
+    return trace_choices(limit)
+
+
+@app.get("/ui/trace/{trace_id}/replay")
+def replay_settings(trace_id: str):
+    try:
+        trace = load_trace(trace_id)
+        return {"system_prompt": editable_prompt(captured_messages(trace)),
+                "model": trace.configuration_snapshot.get("llm_model", ""),
+                "arm": trace.configuration_snapshot.get("arm", "C_hybrid_rerank"),
+                "corpus": trace.configuration_snapshot.get("corpus", ""),
+                "top_k": len(trace.retrieved_chunk_references) or 6}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/ui/trace/{trace_id}/replay")
+def replay_saved_trace(trace_id: str, options: ReplayOptions):
+    try:
+        return replay_trace(load_trace(trace_id), options)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        import logging
+        import uuid
+        reference = uuid.uuid4().hex
+        logging.getLogger(__name__).exception("Trace replay failed [ref=%s]", reference)
+        raise HTTPException(502, f"Replay could not complete. Please retry. Reference: {reference}") from exc
 
 
 @app.get("/ui/reports")

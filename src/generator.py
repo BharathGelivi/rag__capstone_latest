@@ -293,6 +293,7 @@ class Generator:
         system_instructions: Optional[str] = None,
         chat_history: Optional[List[Dict[str, str]]] = None,
         question_override: Optional[str] = None,
+        messages_override: Optional[List[ChatMessage]] = None,
     ) -> GenerationResult:
         """Synthesize an answer from the retrieval context.
 
@@ -318,7 +319,7 @@ class Generator:
         # should still see the user's own wording as the final turn.
         display_question = question_override or retrieval_result.question
 
-        messages = PromptBuilder.build_messages(
+        messages = messages_override if messages_override is not None else PromptBuilder.build_messages(
             question=display_question,
             retrieved_chunks=retrieval_result.retrieved_chunks,
             system_instructions=effective_instructions,
@@ -361,6 +362,7 @@ class Generator:
             generation_time=generation_time,
             retrieved_chunk_ids=retrieval_result.retrieved_chunk_ids,
             generation_metadata={
+                "messages": [{"role": m.role.value, "content": m.content} for m in messages],
                 "retrieval_time": retrieval_result.retrieval_time,
                 "top_k_used": retrieval_result.top_k,
                 "provider": "nvidia",
@@ -380,6 +382,7 @@ class Generator:
         chat_history: Optional[List[Dict[str, str]]] = None,
         question_override: Optional[str] = None,
         reasoning: bool = False,
+        messages_override: Optional[List[ChatMessage]] = None,
     ):
         """Yield answer text incrementally, then expose the full result.
 
@@ -413,7 +416,7 @@ class Generator:
         if reasoning:
             effective_instructions = effective_instructions + THINK_ALOUD_INSTRUCTIONS
         display_question = question_override or retrieval_result.question
-        messages = PromptBuilder.build_messages(
+        messages = messages_override if messages_override is not None else PromptBuilder.build_messages(
             question=display_question,
             retrieved_chunks=retrieval_result.retrieved_chunks,
             system_instructions=effective_instructions,
@@ -514,6 +517,8 @@ class Generator:
                 "history_turns": len(chat_history or []),
                 "finish_reason": finish_reason,
                 "streamed": True,
+                "reasoning_mode": reasoning,
+                "messages": [{"role": m.role.value, "content": m.content} for m in messages],
             },
             reasoning="".join(think_parts),
             error=error,
