@@ -1458,3 +1458,8 @@ body {
 .answer-evidence-panel, .regression-save:has(.regression-form) { flex-basis: 100%; min-width: 0; }
 .evidence-sentence, .captured-source { margin: 14px 0; padding: 14px; border: 1px solid var(--color-divider); overflow-wrap: anywhere; }
 .evidence-debugger button { white-space: normal; text-align: left; }
+.engineering-tool { display: grid; gap: 12px; min-width: 0; }
+.engineering-tool label { display: grid; gap: 6px; margin: 8px 0; }
+.engineering-tool input, .engineering-tool textarea, .engineering-tool select { width: 100%; padding: 8px; color: inherit; background: var(--color-surface); border: 1px solid var(--color-divider); }
+.engineering-tool fieldset { min-width: 0; border: 0; }
+.arena-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; }

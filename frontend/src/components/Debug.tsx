@@ -1,6 +1,7 @@
 import EvidenceExplorer from "./EvidenceExplorer";
 import TraceReplay from "./TraceReplay";
 import RegressionSuite from "./RegressionSuite";
+import StrategyArena from "./StrategyArena";
 import { useEffect, useState } from "react";
 import { getLatestTrace, getTrace, type TraceData } from "../lib/api";
 import type { RuntimeSettings } from "../App";
@@ -82,6 +83,7 @@ export default function Debug({ settings, onSettingsChange, lastTraceId }: Debug
 
       <TraceReplay key={trace?.trace_id ?? "none"} initialTraceId={trace?.trace_id} />
       <RegressionSuite />
+      <StrategyArena key={`arena-${trace?.trace_id}`} traceId={trace?.trace_id}/>
       <EvidenceExplorer trace={trace} />
       <div className="card elev-sm">
         <div className="card-kicker">Prompt sent to model</div>

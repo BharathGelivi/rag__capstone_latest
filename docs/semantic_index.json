@@ -2615,7 +2615,7 @@
     },
     {
       "path": "frontend/src/App.css",
-      "sha256": "1114530a3a6e8a86d69489d467e50d9c37f0981ccad5d6a2ed3ad94e1cc94323",
+      "sha256": "c405ce01304b584a7624719d7d03f0ea84efa0de2fd755eb4e1d04b075829fa1",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -2711,7 +2711,7 @@
     },
     {
       "path": "frontend/src/components/Debug.tsx",
-      "sha256": "bb4ba4c34165ed3a02ef515cc6abb6c6435bac65997e9cd8aa6cadca4d0cc401",
+      "sha256": "ce7e108e0999206f10678788b843eac265b3c8da8dc87a477b55265fdef93a61",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -2723,6 +2723,7 @@
         "../lib/api",
         "./EvidenceExplorer",
         "./RegressionSuite",
+        "./StrategyArena",
         "./TraceReplay",
         "react"
       ],
@@ -2936,6 +2937,31 @@
       "artifact_outputs": []
     },
     {
+      "path": "frontend/src/components/StrategyArena.tsx",
+      "sha256": "ef92fab09e058385b867189f8c2236c2fa13b126efeab3f37f8aa7b3e0fdf7e3",
+      "purpose": "See symbols and dependencies; no source docstring.",
+      "classes": [],
+      "functions": [],
+      "public_apis": [
+        "ArenaResult",
+        "ArenaResults",
+        "StrategyArena"
+      ],
+      "imports": [
+        "../lib/api",
+        "./EvidenceExplorer",
+        "react"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [],
+      "endpoints": [],
+      "depends_on": [],
+      "depended_on_by": [],
+      "tests": [],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
       "path": "frontend/src/components/TraceReplay.tsx",
       "sha256": "13a6918763bfc8d4a3f96794478d06b31d6945b417904af291a3a9950a968105",
       "purpose": "See symbols and dependencies; no source docstring.",
@@ -2994,7 +3020,7 @@
     },
     {
       "path": "frontend/src/lib/api.ts",
-      "sha256": "d8653b01213ba19453c0d3c695b45a5907c8bb89aa74fc1ef8b45835c252a2f9",
+      "sha256": "5b7af3211c812e0beb258b63a77604dc111f6c864109ebc66ba173291939f181",
       "purpose": "See symbols and dependencies; no source docstring.",
       "classes": [],
       "functions": [],
@@ -6173,189 +6199,189 @@
     },
     {
       "path": "src/api_ui.py",
-      "sha256": "e71f5f2c3149af260cc931e17f7928abb6b4e826a29b5be7a696fb25a02e0c4e",
+      "sha256": "7b37c9a6d7c242a1378b552dbbab5db30d1bf939f0355b4e91a7d43e09d0a42c",
       "purpose": "FastAPI backend for the React UI: chat (SSE), graphs, sessions.\n\nThin transport over existing implementations -- chat_service.run_chat_turn,\nui/components/graph.py's build_graph_data, src/memory_graph.py's\nbuild_memory_graph_data, and MemoryManager. No pipeline logic lives here.",
       "classes": [
         {
           "name": "ChatRequest",
-          "line": 48,
+          "line": 50,
           "purpose": ""
         },
         {
           "name": "SessionCreateRequest",
-          "line": 75,
+          "line": 77,
           "purpose": ""
         },
         {
           "name": "SessionRenameRequest",
-          "line": 155,
+          "line": 157,
           "purpose": ""
         },
         {
           "name": "SaveRegressionRequest",
-          "line": 316,
+          "line": 318,
           "purpose": ""
         },
         {
           "name": "RunRegressionRequest",
-          "line": 342,
+          "line": 344,
           "purpose": ""
         }
       ],
       "functions": [
         {
           "name": "get_config",
-          "line": 80,
+          "line": 82,
           "purpose": ""
         },
         {
           "name": "chat",
-          "line": 95,
+          "line": 97,
           "purpose": "SSE stream. Declared as a sync `def` (not `async def`) so the blocking\npipeline runs in Starlette's threadpool instead of the event loop --\notherwise one slow turn would freeze every other route."
         },
         {
           "name": "graph",
-          "line": 116,
+          "line": 118,
           "purpose": ""
         },
         {
           "name": "list_sessions",
-          "line": 144,
+          "line": 146,
           "purpose": ""
         },
         {
           "name": "create_session",
-          "line": 150,
+          "line": 152,
           "purpose": ""
         },
         {
           "name": "rename_session",
-          "line": 160,
+          "line": 162,
           "purpose": ""
         },
         {
           "name": "get_session_messages",
-          "line": 168,
+          "line": 170,
           "purpose": "Reload a session's turns for the message list.\n\nOnly ``role``/``content`` survive a turn's live SSE stream into permanent\nstorage -- the chunks, timings and eval scores the UI showed while the\nturn was in flight only ever existed in the frontend's in-memory state,\nso a page reload or navigating away from Chat and back used to make a\nturn's Details panel vanish for good even though the answer's own\ncitations were still sitting right there in the text. ``trace_id`` is\nthe one durable link back to that data (see ``/ui/trace/{trace_id}``,\nwhich reads the full RAGTrace JSON saved alongside it) -- returning it\nhere lets the frontend re-fetch and rebuild the Details panel on demand."
         },
         {
           "name": "delete_session",
-          "line": 195,
+          "line": 197,
           "purpose": ""
         },
         {
           "name": "list_memory",
-          "line": 203,
+          "line": 205,
           "purpose": "Memory page data. With ``search``, ranks via MemoryManager.search_memory\n(semantic/recency/frequency/importance all populated). Without it, this is\na plain recency listing -- those per-query scores don't exist outside a\nsearch, so only ``importance_score`` (intrinsic to the memory) is set and\nthe rest come back 0."
         },
         {
           "name": "memory_health",
-          "line": 236,
+          "line": 238,
           "purpose": "Return memory persistence health without mutating the store."
         },
         {
           "name": "latest_trace",
-          "line": 242,
+          "line": 244,
           "purpose": ""
         },
         {
           "name": "get_trace",
-          "line": 250,
+          "line": 252,
           "purpose": ""
         },
         {
           "name": "trace_metrics",
-          "line": 296,
+          "line": 298,
           "purpose": "On-demand framework comparison panel for one saved turn.\n\nComputes the 13-metric panel (RAGAS-/RAGChecker-/ARES-style families,\neach with per-metric provenance) for the saved trace, running claim\ndecomposition + NLI verification on demand if the turn wasn't produced\nwith deep analysis. Results are cached per trace id -- each call after\nthe first is free."
         },
         {
           "name": "saved_traces",
-          "line": 312,
+          "line": 314,
           "purpose": ""
         },
         {
           "name": "save_regression_case",
-          "line": 322,
+          "line": 324,
           "purpose": ""
         },
         {
           "name": "regression_case_list",
-          "line": 336,
+          "line": 338,
           "purpose": ""
         },
         {
           "name": "run_regression_suite",
-          "line": 348,
+          "line": 350,
           "purpose": ""
         },
         {
           "name": "_evidence_view",
-          "line": 356,
+          "line": 358,
           "purpose": ""
         },
         {
           "name": "evidence_debugger",
-          "line": 371,
+          "line": 373,
           "purpose": ""
         },
         {
           "name": "analyze_evidence",
-          "line": 386,
+          "line": 388,
           "purpose": ""
         },
         {
           "name": "evidence_source",
-          "line": 411,
+          "line": 413,
           "purpose": ""
         },
         {
           "name": "replay_settings",
-          "line": 428,
+          "line": 430,
           "purpose": ""
         },
         {
           "name": "replay_saved_trace",
-          "line": 443,
+          "line": 445,
           "purpose": ""
         },
         {
           "name": "list_diagnostic_reports",
-          "line": 459,
+          "line": 461,
           "purpose": "List generated HTML diagnostic reports for the report browser."
         },
         {
           "name": "download_diagnostic_report",
-          "line": 476,
+          "line": 478,
           "purpose": "Download one report while rejecting traversal and non-HTML files."
         },
         {
           "name": "list_experiment_runs",
-          "line": 486,
+          "line": 488,
           "purpose": "Return ordered experiment status and the latest reproducibility envelope."
         },
         {
           "name": "_experiment_directory",
-          "line": 519,
+          "line": 521,
           "purpose": ""
         },
         {
           "name": "experiment_detail",
-          "line": 532,
+          "line": 534,
           "purpose": ""
         },
         {
           "name": "_read_latest_trace_file",
-          "line": 558,
+          "line": 560,
           "purpose": ""
         },
         {
           "name": "validate_options",
-          "line": 58,
+          "line": 60,
           "purpose": ""
         },
         {
           "name": "sse_events",
-          "line": 100,
+          "line": 102,
           "purpose": ""
         }
       ],
@@ -6422,6 +6448,8 @@
         "pydantic.model_validator",
         "re",
         "src",
+        "src.arena",
+        "src.arena.router",
         "src.chat_service",
         "src.chunk_registry",
         "src.chunk_registry.ChunkRegistry",
@@ -6605,6 +6633,7 @@
         "experiments/exp06_strategy_ablation.py",
         "experiments/run_all.py",
         "src/__init__.py",
+        "src/arena.py",
         "src/chat_service.py",
         "src/chunk_registry.py",
         "src/device.py",
@@ -6629,6 +6658,101 @@
         "tests/test_audit_regressions.py",
         "tests/test_engineering_tools_api.py",
         "tests/test_trace_replay.py"
+      ],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
+      "path": "src/arena.py",
+      "sha256": "c040688252f796e1b288bd88409870f27021f3fac933214cbba9ceb77db93d8c",
+      "purpose": "Paired strategy comparisons over the same saved questions.",
+      "classes": [
+        {
+          "name": "ArenaRequest",
+          "line": 14,
+          "purpose": ""
+        }
+      ],
+      "functions": [
+        {
+          "name": "paired",
+          "line": 30,
+          "purpose": ""
+        },
+        {
+          "name": "run_arena",
+          "line": 52,
+          "purpose": ""
+        },
+        {
+          "name": "strategies",
+          "line": 88,
+          "purpose": ""
+        },
+        {
+          "name": "run",
+          "line": 93,
+          "purpose": ""
+        },
+        {
+          "name": "unique_known",
+          "line": 22,
+          "purpose": ""
+        }
+      ],
+      "public_apis": [
+        "ArenaRequest",
+        "paired",
+        "run_arena",
+        "strategies",
+        "run",
+        "unique_known"
+      ],
+      "imports": [
+        "copy",
+        "copy.deepcopy",
+        "fastapi",
+        "fastapi.APIRouter",
+        "fastapi.HTTPException",
+        "itertools",
+        "itertools.combinations",
+        "pydantic",
+        "pydantic.BaseModel",
+        "pydantic.ConfigDict",
+        "pydantic.Field",
+        "pydantic.model_validator",
+        "random",
+        "src.strategy_arms",
+        "src.strategy_arms.ARMS",
+        "src.trace_replay",
+        "src.trace_replay.ReplayOptions",
+        "src.trace_replay.load_trace",
+        "src.trace_replay.replay_trace"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [],
+      "endpoints": [
+        {
+          "method": "GET",
+          "route": "'/strategies'",
+          "handler": "strategies"
+        },
+        {
+          "method": "POST",
+          "route": "'/run'",
+          "handler": "run"
+        }
+      ],
+      "depends_on": [
+        "src/strategy_arms.py",
+        "src/trace_replay.py"
+      ],
+      "depended_on_by": [
+        "src/api_ui.py",
+        "tests/test_arena.py"
+      ],
+      "tests": [
+        "tests/test_arena.py"
       ],
       "artifact_inputs": [],
       "artifact_outputs": []
@@ -12303,6 +12427,7 @@
       "depended_on_by": [
         "experiments/exp06_strategy_ablation.py",
         "src/api_ui.py",
+        "src/arena.py",
         "src/chat_service.py",
         "src/trace_replay.py",
         "ui/app.py"
@@ -12419,7 +12544,7 @@
     },
     {
       "path": "src/trace_replay.py",
-      "sha256": "4b0a0a6be6bd94231b5187b549a699c8b8b04f5a1ee0a4c7f69510dfef0eedb8",
+      "sha256": "62befba228f9aef8f658f3fa97beffc58f19f7e0c2bbe71dbff4096f6d1f61ab",
       "purpose": "Replay saved traces without consulting mutable memory or modifying the source.",
       "classes": [
         {
@@ -12538,6 +12663,7 @@
       ],
       "depended_on_by": [
         "src/api_ui.py",
+        "src/arena.py",
         "src/regression_cases.py",
         "tests/test_engineering_tools_api.py",
         "tests/test_trace_replay.py"
@@ -13302,6 +13428,61 @@
         "src/__init__.py",
         "src/api_ui.py",
         "src/chat_service.py"
+      ],
+      "depended_on_by": [],
+      "tests": [],
+      "artifact_inputs": [],
+      "artifact_outputs": []
+    },
+    {
+      "path": "tests/test_arena.py",
+      "sha256": "fcac83182622732fcdd2c0c67789a943d50e4d3af569a819dcf0ba72a319ea00",
+      "purpose": "See symbols and dependencies; no source docstring.",
+      "classes": [],
+      "functions": [
+        {
+          "name": "test_paired_excludes_missing_judgments_and_keeps_question_pairs",
+          "line": 6,
+          "purpose": ""
+        },
+        {
+          "name": "test_invalid_arms_and_nan_rejected",
+          "line": 13,
+          "purpose": ""
+        },
+        {
+          "name": "test_arena_isolates_arm_errors_and_resumes_completed_results",
+          "line": 18,
+          "purpose": ""
+        },
+        {
+          "name": "test_arena_compares_same_question_and_reports_estimate_scope",
+          "line": 29,
+          "purpose": ""
+        }
+      ],
+      "public_apis": [
+        "test_paired_excludes_missing_judgments_and_keeps_question_pairs",
+        "test_invalid_arms_and_nan_rejected",
+        "test_arena_isolates_arm_errors_and_resumes_completed_results",
+        "test_arena_compares_same_question_and_reports_estimate_scope"
+      ],
+      "imports": [
+        "pytest",
+        "src.arena",
+        "src.arena.ArenaRequest",
+        "src.arena.paired",
+        "src.arena.run_arena",
+        "types",
+        "types.SimpleNamespace",
+        "unittest.mock",
+        "unittest.mock.patch"
+      ],
+      "configuration_dependencies": [],
+      "artifact_references": [],
+      "endpoints": [],
+      "depends_on": [
+        "src/arena.py"
       ],
       "depended_on_by": [],
       "tests": [],
@@ -19647,7 +19828,7 @@
     },
     {
       "path": "tests/test_ui_e2e.py",
-      "sha256": "16befb25d3a8426a3192930d6aa6716ee17b9a853dbe5eb6c2d8023701df3b2e",
+      "sha256": "745b36bd7ac413d1677cc055c873825b00239cdef581acd454de4a050c2f2be5",
       "purpose": "Browser regressions with a fully mocked backend: no models, data writes or LLM calls.\nStart the frontend on port 5173 and set XRAG_E2E=1 to opt in.",
       "classes": [
         {
@@ -19743,6 +19924,11 @@
           "purpose": ""
         },
         {
+          "name": "test_strategy_arena_sends_paired_questions_and_renders_results",
+          "line": 240,
+          "purpose": ""
+        },
+        {
           "name": "routes",
           "line": 129,
           "purpose": ""
@@ -19766,6 +19952,11 @@
           "name": "routes",
           "line": 226,
           "purpose": ""
+        },
+        {
+          "name": "routes",
+          "line": 243,
+          "purpose": ""
         }
       ],
       "public_apis": [
@@ -19787,6 +19978,8 @@
         "test_answer_can_be_saved_with_engineer_expectations",
         "test_sentence_claim_opens_exact_passage_and_bad_citation_is_visible",
         "test_regression_suite_displays_failed_snapshot_assertions",
+        "test_strategy_arena_sends_paired_questions_and_renders_results",
+        "routes",
         "routes",
         "routes",
         "routes",

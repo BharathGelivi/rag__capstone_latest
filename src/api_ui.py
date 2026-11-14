@@ -33,6 +33,8 @@ from src.regression_cases import Expectations, capture_case, evaluate_case, load
 from ui.components.graph import build_graph_data, build_legal_graph_data
 
 app = FastAPI(title="X-RAG UI backend")
+from src.arena import router as arena_router
+app.include_router(arena_router)
 
 app.add_middleware(
     CORSMiddleware,

@@ -236,3 +236,24 @@ class TestUIEndToEnd(unittest.TestCase):
         self.page.get_by_role("button", name="Run selected cases (1)", exact=True).click()
         self.page.get_by_text("0/1 cases passed.", exact=True).wait_for()
         self.assertIn("Missing", self.page.get_by_label("Regression results").inner_text())
+
+    def test_strategy_arena_sends_paired_questions_and_renders_results(self):
+        self.page.unroute("http://127.0.0.1:8010/**")
+        requests = []
+        def routes(route):
+            path = route.request.url.split("8010")[-1]
+            if path == "/ui/arena/run":
+                requests.append(route.request.post_data_json)
+                route.fulfill(json={"rows": [{"source_trace_id": "fixture", "question": "Same question", "results": [{"arm": "A_vector", "error": "Corpus unavailable"}, {"arm": "B_hybrid", "error": "Corpus unavailable"}]}], "paired": [{"baseline": "A_vector", "challenger": "B_hybrid", "n": 0, "mean_difference": None, "bootstrap_95_percent": None}], "uncertainty_note": "No interval without paired judgments."})
+            elif path == "/ui/traces": route.fulfill(json=[])
+            else: self.fixture(route)
+        self.page.route("http://127.0.0.1:8010/**", routes)
+        self.page.goto("http://127.0.0.1:5173")
+        self.page.get_by_role("button", name="Debug", exact=True).click()
+        arena = self.page.get_by_role("region", name="Strategy comparison arena")
+        arena.get_by_label("Question trace IDs").fill("fixture")
+        arena.get_by_label("Strategy IDs").fill("A_vector\nB_hybrid")
+        arena.get_by_role("button", name="Compare strategies", exact=True).click()
+        arena.get_by_text("Same question", exact=True).wait_for()
+        self.assertIn("paired n=0", arena.inner_text())
+        self.assertEqual(requests[0]["arms"], ["A_vector", "B_hybrid"])

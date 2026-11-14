@@ -401,3 +401,9 @@ async function checkedFetch(input: RequestInfo | URL, init?: RequestInit): Promi
   if (!response.ok) throw new Error(`Request failed (HTTP ${response.status}). Please retry.`);
   return response;
 }
+
+export async function toolsRequest<T>(path: string, body?: unknown, method?: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {method: method ?? (body === undefined ? "GET" : "POST"), headers: {"Content-Type": "application/json"}, ...(body === undefined ? {} : {body: JSON.stringify(body)})});
+  if (!response.ok) {const error = await response.json().catch(() => ({})); throw new Error(typeof error.detail === "string" ? error.detail : `Request failed (${response.status})`);}
+  return response.json();
+}

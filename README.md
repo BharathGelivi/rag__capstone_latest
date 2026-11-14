@@ -1,5 +1,18 @@
 # X-RAG Diagnostic Framework
 
+## Strategy comparison arena
+
+Open **Debug → Strategy comparison arena**. Enter saved question trace IDs,
+strategy IDs and your provider's input/output rates. Each question runs through
+each selected strategy using fresh retrieval and claim verification. Results show
+answers, captured passages, verdicts, latency and final-generation token/cost
+estimates. Planner and judge calls are excluded from these estimates; zero rates
+mean unpriced usage. Source traces remain unchanged and child traces are saved.
+Dataset comparisons retain question pairs and show a seeded paired-bootstrap
+95% interval for differences in supported-claim fraction. Missing judgments are
+excluded with the paired sample count shown; a single question has no interval.
+This diagnostic measure does not establish factual accuracy.
+
 ## Save failures as regression cases
 
 Every saved answer has **Save as test case** and **Evidence debugger** actions.

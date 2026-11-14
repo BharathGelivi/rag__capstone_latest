@@ -139,7 +139,7 @@ def _claim_changes(original, replay):
             if before.get(key, {}).get("status") != after.get(key, {}).get("status")]
 
 
-def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=None):
+def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=None, progress=None):
     started = time.perf_counter()
     source = deepcopy(source)
     messages = captured_messages(source)
@@ -164,6 +164,8 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
                                      or arm == "C_fixed_chunking"):
             raise ValueError("This strategy requires the judgments corpus")
         pipeline_corpus = "judgments_fixed" if arm == "C_fixed_chunking" else corpus
+        if progress:
+            progress("loading models")
         with chat_service.GPU_LOCK:
             if corpus == "both":
                 chunks = []
@@ -182,6 +184,8 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
                 retriever, planner, registry, error = chat_service.load_pipeline(pipeline_corpus)
                 if error:
                     raise ValueError(error)
+                if progress:
+                    progress("retrieving")
                 chunks, metadata, _ = execute_arm(
                     arm, search_query, registry, retriever,
                     chat_service.load_knowledge_graph() if corpus == "judgments" else None,
@@ -198,6 +202,8 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
             messages.insert(0, ChatMessage(role="system", content=options.system_prompt))
     retrieval = RetrievalResult(source.question, 0, chunks, [c.chunk_id for c in chunks],
                                 [c.similarity_score for c in chunks], retrieval_time, len(chunks), metadata)
+    if progress:
+        progress("waiting for inference")
     generator = Generator(model_name=options.model or old_config.get("llm_model"),
                           temperature=old_config.get("llm_temperature", 0.0),
                           max_tokens=old_config.get("llm_max_tokens", 2048))
@@ -234,6 +240,8 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
         "warnings": warnings,
     }
     if options.verify_claims:
+        if progress:
+            progress("verifying claims")
         outcome = chat_service.deep_analyze(trace, chunks + [RetrievedChunk(**v) for v in memory_evidence])
         trace.diagnostics["claim_error" if "error" in outcome else "claim_verification"] = (
             outcome.get("error") if "error" in outcome else outcome["verification"])
