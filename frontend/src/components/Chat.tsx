@@ -756,6 +756,8 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
   const listRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+  const requestSessionRef = useRef<string | null>(null);
   const reasoningStartRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -768,10 +770,19 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
   // "both" has no graph/IRCoT analogue -- it merges two independently
   // hybrid-reranked corpora, so only the baseline arm applies.
   useEffect(() => {
-    if (corpus === "both") setArm("C_hybrid_rerank");
-  }, [corpus]);
+    const allowed = config?.arms_by_corpus[corpus];
+    if (allowed?.length) setArm(current => allowed.includes(current) ? current : allowed[0]);
+  }, [corpus, config]);
+
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   useEffect(() => {
+    if (busyRef.current && requestSessionRef.current === activeSessionId) return;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    setStageLabel("");
     if (!activeSessionId) {
       setMessages([]);
       return;
@@ -851,16 +862,11 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
     });
   }
 
-  async function send(question?: string, armOverride?: string) {
+  async function send(question?: string, armOverride?: string, baseMessages: Message[] = messages) {
     const q = (question ?? input).trim();
-    if (!q || busy) return;
-
+    if (!q || busyRef.current) return;
+    busyRef.current = true;
     let sessId = activeSessionId;
-    if (!sessId) {
-      const newSess = await createSession(q.slice(0, 30));
-      sessId = newSess.session_id;
-      onSessionCreated(sessId);
-    }
 
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -871,21 +877,29 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
     // otherwise the condenser would resolve it against the previous turn and
     // the two answers would no longer differ only in retrieval arm.
     const armUsed = armOverride ?? arm;
-    const history = armOverride ? [] : messages.map((m) => ({ role: m.role, content: m.content }));
-    const isFirstQuestion = messages.length === 0;
+    const history = armOverride ? [] : baseMessages.map((m) => ({ role: m.role, content: m.content }));
+    const isFirstQuestion = baseMessages.length === 0;
     const initialMeta: MsgMeta = { arm: armUsed, corpus };
 
-    setMessages((m) => [
-      ...m,
+    setMessages([
+      ...baseMessages,
       { role: "user", content: q },
       { role: "assistant", content: "", meta: initialMeta },
     ]);
 
     const controller = new AbortController();
     abortRef.current = controller;
+    requestSessionRef.current = sessId;
     reasoningStartRef.current = null;
 
     try {
+      if (!sessId) {
+        const newSess = await createSession(q.slice(0, 30));
+        if (controller.signal.aborted) return;
+        sessId = newSess.session_id;
+        requestSessionRef.current = sessId;
+        onSessionCreated(sessId);
+      }
       for await (const evt of streamChat({
         question: q,
         session_id: sessId,
@@ -895,6 +909,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
         memory_enabled: settings.memoryEnabled,
         deep_analysis: settings.deepAnalysis,
       }, controller.signal)) {
+        if (abortRef.current !== controller || controller.signal.aborted) return;
         applyEvent(evt, q);
       }
 
@@ -904,14 +919,17 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
         onSessionRenamed();
       }
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
+      if ((err as Error).name !== "AbortError" && abortRef.current === controller) {
         applyEvent({ event: 'error', message: (err as Error).message || 'The chat request failed. Please retry.' }, q);
       }
       // Stopped by the user -- keep whatever text/chunks already streamed in.
     } finally {
-      abortRef.current = null;
-      setBusy(false);
-      setStageLabel("");
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        busyRef.current = false;
+        setBusy(false);
+        setStageLabel("");
+      }
     }
   }
 
@@ -1000,8 +1018,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
   }
 
   function retry(question: string) {
-    setMessages((m) => m.slice(0, -2));
-    send(question);
+    void send(question, undefined, messages.slice(0, -2));
   }
 
   const isEmpty = messages.length === 0;
@@ -1023,7 +1040,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
                 : `Retrieval strategy: ${ARM_DESCRIPTIONS[arm] ?? arm}`
             }
           >
-            {config?.arms.map((a) => (
+            {config?.arms_by_corpus[corpus]?.map((a) => (
               <option key={a} value={a} title={ARM_DESCRIPTIONS[a]}>{a}</option>
             ))}
           </select>
@@ -1086,7 +1103,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
                   <ActionBar
                     content={m.content}
                     traceId={m.meta?.trace_id}
-                    arms={config?.arms ?? []}
+                    arms={config?.arms_by_corpus[corpus] ?? []}
                     currentArm={m.meta?.arm ?? arm}
                     busy={busy}
                     onRunAgain={(a) => {
@@ -1122,6 +1139,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
             <textarea
               ref={textareaRef}
               className="input-textarea"
+              aria-label="Question"
               rows={1}
               value={input}
               onChange={handleInput}
@@ -1132,13 +1150,13 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
               disabled={busy}
             />
             {busy ? (
-              <button className="send-btn stop-btn" onClick={stop} title="Stop generating">
+              <button className="send-btn stop-btn" aria-label="Stop generating" onClick={stop} title="Stop generating">
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <rect x="6" y="6" width="12" height="12" rx="2" />
                 </svg>
               </button>
             ) : (
-              <button className="send-btn" onClick={() => send()} disabled={!input.trim()}>
+              <button className="send-btn" aria-label="Send message" onClick={() => send()} disabled={!input.trim()}>
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M12 4l8 8h-5v8H9v-8H4z" />
                 </svg>

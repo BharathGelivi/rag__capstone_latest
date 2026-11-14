@@ -5,8 +5,11 @@
 From the repository root in **PowerShell**, after the Python environment and
 `.env` in [Quick Start](#quick-start) are ready, install the frontend dependencies
 once with `npm --prefix frontend install`. Node.js must be on PATH. This local
-checkout also needs the installed CodeCharta skill and its global visualization
+checkout can also use the installed CodeCharta skill and its global visualization
 package (the helper expects `$env:USERPROFILE\.codex\skills\codecharta`).
+The source viewer is optional: when its script or saved explorer is absent,
+the helper starts the dashboard and API normally. The saved Archify and
+CodeCharta files described below are local artifacts excluded from Git.
 
 ```powershell
 # Launch three hidden background processes; terminal can be closed afterward.
@@ -162,6 +165,41 @@ developer logs. HTML diagnostic reports preserve trace text as escaped content.
 
 ## Run the React UI
 
+## Run the dashboard (React)
+
+From a fresh clone, create the Python environment, install dependencies, and
+copy `.env.example` to `.env` with your `NVIDIA_API_KEY`. The chat dashboard
+also needs an ingested corpus (`python run_pipeline.py` after adding PDFs to
+`data/`). Keep your existing environment and corpus when updating this repo.
+
+Windows PowerShell setup from the repository root:
+
+```powershell
+py -3.13 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+# Edit .env, add PDFs to data/, then ingest:
+.\venv\Scripts\python.exe run_pipeline.py
+```
+
+Start these in two separate PowerShell terminals:
+
+```powershell
+# Terminal 1, repository root
+.\venv\Scripts\python.exe run_api_ui.py
+
+# Terminal 2, repository root
+cd frontend
+npm ci
+npm run dev
+```
+
+Open <http://localhost:5173>. Keep both terminals running. The dashboard
+backend uses port **8010**; the separate diagnostic API uses **8000**.
+The alternative Streamlit dashboard runs with
+`.\venv\Scripts\python.exe -m streamlit run ui/app.py` at port **8501**.
+
+
 Two servers, both from the repo root. Requires the Python env set up (see
 [Quick Start](#quick-start) below) and Node.js/npm installed.
 
@@ -191,7 +229,105 @@ python -m pytest tests/test_ui_e2e.py -v      # real Playwright e2e (needs both 
 
 ## Project Overview
 
-The X-RAG Diagnostic Framework is a comprehensive evaluation tool designed to diagnose, trace, and recommend fixes for Retrieval-Augmented Generation (RAG) pipelines. It explicitly isolates execution from reasoning, allowing deterministic analysis of where exactly a pipeline failed (e.g., retrieval miss vs. hallucination vs. unsupported claim).
+The X-RAG Diagnostic Framework evaluates RAG pipelines, traces failures,
+and recommends fixes across retrieval, generation, and claim grounding.
+
+## Install and evaluate an external RAG trace (feature branch)
+
+The preserved dashboard is on `main` in
+<https://github.com/BharathGelivi/capstone-rag-evaluation>. Portable package/API
+support is on `feature/trace-api-nli`, ready to review and merge later. The
+repository is private, so GitHub installation requires authenticated Git access.
+Use a **separate Python 3.13 environment** for integration into another project:
+
+```bash
+python -m venv .venv
+# Activate .venv, then:
+python -m pip install "capstone-rag-evaluation @ git+https://github.com/BharathGelivi/capstone-rag-evaluation.git@feature/trace-api-nli"
+```
+
+Alternatively download/clone that branch and run `python -m pip install .`
+from its root. This installs the Python evaluator and command line tools;
+run the React dashboard from the source checkout using the instructions above.
+The first evaluation downloads `cross-encoder/nli-deberta-v3-large` from
+Hugging Face. Later runs reuse the cached weights. CPU works; CUDA is faster.
+
+```python
+from xrag import evaluate_trace
+
+result = evaluate_trace({
+    "question": "What is the capital of France?",
+    "answer": "Paris is the capital of France.",
+    "retrieved_chunks": [
+        {"chunk_id": "doc-1", "text": "Paris is the capital of France."}
+    ],
+    "claims": ["Paris is the capital of France."]
+})
+print(result["verification"])
+print(result["diagnostic_report"])
+```
+
+`evaluate_trace` accepts a dictionary, JSON string, or this framework's
+`RAGTrace`. Canonical fields `generated_answer`, `retrieved_chunk_references`,
+and `chunk_text` are also accepted. Supply original evidence text inline, or
+in the canonical prompt's context blocks. Chunk IDs alone are rejected: the
+package does not read your local corpus or `registry_path`. An empty evidence
+list is accepted and reported as unverifiable. Inputs are not modified and no
+artifacts, corpus, or memory files are written.
+
+Supplied `claims` are used directly. Without them, the default treats answer
+sentences as claims and reports that limitation. For atomic claim decomposition,
+set `NVIDIA_API_KEY` in the process environment and call
+`evaluate_trace(trace, claim_mode="llm")`; this sends the answer to NVIDIA.
+Verification itself uses local NLI, with LLM judge escalation disabled.
+The response includes per-claim verdicts, evidence and NLI scores, support and
+contradiction rates, and the existing diagnostic report. Detailed stage
+diagnoses need `configuration_snapshot`, `execution_statistics`, and
+`pipeline_stage_status`; absent metadata limits what can be inferred. This
+entry point does not compute the optional remote RAGAS/reference-answer metrics.
+Reuse `TraceEvaluator()` or `evaluate_trace` across calls to retain one model.
+Calls sharing an evaluator are serialized to bound model memory usage.
+
+### Command line
+
+```bash
+xrag-evaluate examples/external_trace.json --output result.json
+# Without --output, JSON is printed to stdout (model logs may appear too).
+xrag-evaluate trace.json --claim-mode llm --output result.json
+```
+
+### Standalone HTTP API
+
+```bash
+xrag-api --port 8020
+# Equivalent: python -m uvicorn xrag.api:app --host 127.0.0.1 --port 8020
+```
+
+Swagger: <http://127.0.0.1:8020/docs>. This service uses its own port and does
+not access the dashboard's memory or corpus. Send an envelope containing your
+trace, with optional `claim_mode` (`sentences` by default):
+
+```python
+import json
+from urllib.request import Request, urlopen
+
+trace = json.load(open("examples/external_trace.json", encoding="utf-8"))
+request = Request("http://127.0.0.1:8020/evaluate",
+                  data=json.dumps({"trace": trace}).encode(),
+                  headers={"Content-Type": "application/json"})
+with urlopen(request, timeout=300) as response:
+    result = json.load(response)
+```
+
+Invalid traces return HTTP 422. Model/runtime failures return HTTP 500 with
+a reference ID. `GET /health` checks service availability without loading the
+NLI model. Run one worker to keep one model instance; each additional worker
+loads its own weights. The original `run_api.py` `/analyze` API remains available
+for the existing corpus-based workflow and persists its usual artifacts.
+
+Package/API checks: `python -m pytest tests/test_trace_package.py -q`.
+Package metadata follows [setuptools' pyproject configuration](https://setuptools.pypa.io/en/latest/userguide/pyproject_config.html),
+and request validation uses [FastAPI request bodies](https://fastapi.tiangolo.com/tutorial/body/).
 
 ---
 

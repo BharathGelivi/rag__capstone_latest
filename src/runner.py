@@ -1,7 +1,8 @@
 import os
 from typing import Optional
 from src.logger import get_logger
-from src.rag_trace import RAGTrace
+from src.rag_trace import RAGTrace, RAGTraceBuilder
+from src.claims import ClaimSet
 from src.claim_decomposer import ClaimDecomposer
 from src.claim_verifier import ClaimVerifier
 from src.pipeline_state_analyzer import PipelineStateAnalyzer
@@ -65,6 +66,8 @@ class PipelineRunner:
         # 1. Claim Decomposition
         logger.info("Running Claim Decomposer...")
         claim_set = self.decomposer.decompose(trace)
+        trace.diagnostics = {**(trace.diagnostics or {}), "decomposition_success":
+                             claim_set.metadata.get("diagnostics", {}).get("success", True)}
 
         # 2. Claim Verification
         logger.info("Running Claim Verifier...")
@@ -80,7 +83,7 @@ class PipelineRunner:
 
         # 5. Corrective Action Engine
         logger.info("Running Corrective Action Engine...")
-        cap = self.cae.generate(rca, psm=psm)
+        cap = self.cae.generate(rca, psm=psm, config_snapshot=trace.configuration_snapshot)
 
         # 5.5 Answer Correctness (Claim Recall) -- optional, only when a gold answer is available
         answer_correctness = None
@@ -96,30 +99,35 @@ class PipelineRunner:
         if self.ragas_evaluator and self.ragas_evaluator.embed_model:
             logger.info("Running Native RAGAS Evaluator...")
             try:
-                # Traces store chunk *references* (plain dicts) without text;
-                # chunk text lives in the chunk registry. Rebuilding
-                # RetrievedChunks here used to confuse dict keys with
-                # attribute access (c.chunk_id / hasattr(c, 'text') on dicts),
-                # so it always produced an empty list and the metrics silently
-                # ended up None. ClaimVerifier.build_retrieved_chunks_from_trace
-                # is the same reconstruction claim verification already uses.
-                retrieved_chunks = []
-                registry_path = "artifacts/chunk_registry.json"
-                if os.path.exists(registry_path):
-                    registry = ChunkRegistry.load_from_json(registry_path)
-                    retrieved_chunks = ClaimVerifier.build_retrieved_chunks_from_trace(
-                        trace, registry
-                    )
+                mapped_chunks = self.verifier.build_retrieved_chunks_from_trace(trace, None)
+                if len(mapped_chunks) != len(trace.retrieved_chunk_references):
+                    corpus = trace.configuration_snapshot.get("corpus", "statutes")
+                    path = trace.configuration_snapshot.get("registry_path") or (
+                        "artifacts/legal/chunk_registry_legal.json" if corpus == "judgments" else "artifacts/chunk_registry.json")
+                    registry = ChunkRegistry.load_from_json(path) if os.path.exists(path) else None
+                    mapped_chunks = self.verifier.build_retrieved_chunks_from_trace(trace, registry)
 
                 ragas_metrics = self.ragas_evaluator.evaluate(
                     question=trace.question,
                     answer=trace.generated_answer,
-                    retrieved_chunks=retrieved_chunks,
+                    retrieved_chunks=mapped_chunks,
                     verification=verification,
                     reference=gold_answer
                 )
             except Exception as e:
                 logger.warning(f"Native RAGAS evaluation failed: {e}")
+
+        # Persist the existing canonical artifacts and record actual paths.
+        canonical = ClaimSet.from_candidates(claim_set)
+        claims_path = f"artifacts/claims/TRACE_{trace.trace_id}.json"
+        canonical.to_json(claims_path)
+        self.verifier.save_artifacts(verification)
+        paths = {"ClaimSet": claims_path,
+                 "Verification": f"artifacts/verification/TRACE_{trace.trace_id}.json",
+                 "PipelineStateMatrix": psm.save(), "RootCauseAnalysis": rca.save(),
+                 "CorrectiveActionPlan": cap.save()}
+        paths["RAGTrace"] = RAGTraceBuilder.save_to_json(trace)
+        trace.diagnostics["artifact_paths"] = paths
 
         # 6. Report Builder
         logger.info("Running Report Builder...")
@@ -133,5 +141,8 @@ class PipelineRunner:
             ragas_metrics=ragas_metrics
         )
 
+        paths["DiagnosticEvaluationReport"] = f"artifacts/reports/{trace.trace_id}.json"
+        report.metadata["artifact_paths"] = dict(paths)
+        RAGTraceBuilder.save_to_json(trace)
         logger.info(f"Pipeline run completed for Trace ID: {trace.trace_id}")
         return report

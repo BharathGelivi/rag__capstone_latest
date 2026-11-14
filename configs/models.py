@@ -34,46 +34,35 @@ RERANKER_MODEL_NAME = "BAAI/bge-reranker-base"
 # All generation, claim decomposition, and baseline judge calls route through
 # the NVIDIA free-tier inference endpoint.
 #
-# 2026-09-03: meta/llama-3.1-70b-instruct (this project's original model) and
-# mistralai/mixtral-8x7b-instruct-v0.1 (the decomposer/planner/RAGChecker
-# model) were both retired from NVIDIA's catalog (410 Gone). A follow-up
-# attempt to move to nvidia/llama-3.1-nemotron-70b-instruct also fails -- not
-# retired, but not entitled for this account's API key (404 "Function ...
-# Not found for account"). Verified directly against
-# https://integrate.api.nvidia.com/v1/chat/completions with this repo's
-# NVIDIA_API_KEY: of ~80 catalog models tried, only
-# nvidia/nemotron-3-super-120b-a12b returned a real completion, so every
-# role below points at it for now. This is a stopgap, not a quality
-# decision -- it means the "8B for high-throughput decomposition" split
-# this file used to describe no longer holds; the small/fast roles
-# (decomposer, planner, RAGChecker) are paying full 120B-class latency
-# until a working small model is found for this account. Re-run the same
-# probe against /v1/models if NVIDIA_API_KEY changes or 404s return.
+# 2026-11-14: nemotron-3-super returns 404 for this account. The 3.5
+# Super model below was verified with a real completion using the project key.
+# Catalog listing alone does not guarantee account access; probe completions
+# again if NVIDIA returns an entitlement error.
 
 LLM_PROVIDER = "nvidia"
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 # Generation: highest-quality model for the answer synthesis step.
-NVIDIA_GENERATION_MODEL       = "nvidia/nemotron-3-super-120b-a12b"
+NVIDIA_GENERATION_MODEL       = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 # Claim decomposition: structured JSON output, high volume -- ideally a
 # small model, but see the note above for why this is 120B for now.
-NVIDIA_CLAIM_DECOMPOSER_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+NVIDIA_CLAIM_DECOMPOSER_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 # Retrieval control loops (IRCoT planner, agentic controller). These calls emit
 # a short JSON object choosing the next query or action -- a routing decision,
 # not answer synthesis. Was 8B (see note above); until a working small model
 # is found for this account, multi-hop ablations will run at full-model
 # planner latency rather than the ~49s/example the 8B split achieved.
-NVIDIA_PLANNER_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+NVIDIA_PLANNER_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 # Baseline judges — same split logic: RAGAS/ARES need strong instruction
 # following; RAGChecker processes many short calls so 8B is sufficient
 # (was, before the retirement/entitlement issue above).
-NVIDIA_RAGAS_JUDGE_MODEL      = "nvidia/nemotron-3-super-120b-a12b"
-NVIDIA_RAGCHECKER_JUDGE_MODEL = "nvidia/nemotron-3-super-120b-a12b"
-NVIDIA_ARES_JUDGE_MODEL       = "nvidia/nemotron-3-super-120b-a12b"
+NVIDIA_RAGAS_JUDGE_MODEL      = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+NVIDIA_RAGCHECKER_JUDGE_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+NVIDIA_ARES_JUDGE_MODEL       = "nvidia/nemotron-3.5-super-vl-120b-a12b"
 
 # Convenience alias used by code that only needs one model name (e.g. legacy
 # references to LLM_MODEL_NAME before the NVIDIA migration).
@@ -99,16 +88,11 @@ LLM_MAX_TOKENS  = 2048
 # not going to answer.
 LLM_REQUEST_TIMEOUT = 90.0
 
-# NOTE: there is deliberately no per-client retry knob here. The OpenAI-like
-# clients are built with ``max_retries=0`` so that all retry/backoff decisions
-# go through ``src/rate_limiter.py`` (which gates every attempt against the
-# shared account budget); client-side blind retries would burst past it.
-
 # NVIDIA's build.nvidia.com free tier caps requests at 40/minute per model,
 # account-wide (confirmed via NVIDIA developer forums/docs, 2026). Every call
 # in this project — generation, claim decomposition, and the claim verifier's
 # LLM-judge escalation — shares one account and one model
-# (nvidia/nemotron-3-super-120b-a12b), so they all share this one budget.
+# (nvidia/nemotron-3.5-super-vl-120b-a12b), so they all share this one budget.
 # Set below the documented cap, not at it: the limit is described by NVIDIA as
 # varying with "model, use-case, and current overall traffic," and a proactive
 # throttle that never hits 429 is more useful than one that races the cap.

@@ -10,6 +10,7 @@ importers now depend on ``src.stats`` instead.
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional
 
 
@@ -20,7 +21,13 @@ def pearson_r(xs: List[Optional[float]], ys: List[Optional[float]]) -> Optional[
     variance. None entries on either side are dropped pairwise, so failed
     baseline rows do not silently corrupt the correlation.
     """
-    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    def finite(value):
+        try:
+            return value is not None and not isinstance(value, bool) and math.isfinite(float(value))
+        except (TypeError, ValueError):
+            return False
+
+    pairs = [(float(x), float(y)) for x, y in zip(xs, ys) if finite(x) and finite(y)]
     if len(pairs) < 2:
         return None
     xs2, ys2 = zip(*pairs)

@@ -24,6 +24,14 @@ test('chat stream rejects HTTP failure and incomplete streams, preserves split U
     assert.equal(cancelled, true);
     globalThis.fetch = async () => new Response(bytes);
     assert.deepEqual((await consume()).map(e => e.event), ['token', 'done']);
+    const crlf = new TextEncoder().encode('data: {"event":"done"}\r\n\r\n');
+    globalThis.fetch = async () => new Response(new ReadableStream({
+      start(controller) {
+        for (const byte of crlf) controller.enqueue(new Uint8Array([byte]));
+        controller.close();
+      },
+    }));
+    assert.deepEqual((await consume()).map(e => e.event), ['done']);
   } finally {
     globalThis.fetch = original;
   }

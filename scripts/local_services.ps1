@@ -37,8 +37,12 @@ if ($Action -eq 'start') {
     $viteScript = Join-Path $projectRoot 'frontend\node_modules\vite\bin\vite.js'
     $viewerScript = Join-Path $env:USERPROFILE '.codex\skills\codecharta\scripts\serve.mjs'
     $nodeExe = (Get-Command node.exe -ErrorAction Stop).Source
-    foreach ($path in @($pythonExe, $viteScript, $viewerScript)) {
+    foreach ($path in @($pythonExe, $viteScript)) {
         if (!(Test-Path -LiteralPath $path)) { throw "Missing prerequisite: $path. See README startup instructions." }
+    }
+    if (!(Test-Path -LiteralPath $viewerScript) -or !(Test-Path -LiteralPath (Join-Path $projectRoot '.codecharta\explorer.html'))) {
+        $services = @($services | Where-Object Name -ne 'viewer')
+        Write-Output 'Skipping optional local source viewer; dashboard and API will start normally.'
     }
     New-Item -ItemType Directory -Path $logRoot -Force | Out-Null
     $previousDebug = $env:DEBUG

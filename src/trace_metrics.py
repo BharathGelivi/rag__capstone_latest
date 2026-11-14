@@ -89,7 +89,7 @@ def _rebuild_chunks(trace: RAGTrace) -> list:
 def _summary_from_stored_payload(trace_json: Dict[str, Any]) -> Optional[VerificationSummary]:
     """Rebuild a VerificationSummary from the claim payload a live turn (or a
     previous on-demand run) persisted into the trace file."""
-    payload = trace_json.get("claim_verification")
+    payload = trace_json.get("claim_verification") or (trace_json.get("diagnostics") or {}).get("claim_verification")
     if not payload:
         return None
     results = payload.get("results") or []

@@ -12,12 +12,13 @@ import glob
 import json
 import os
 import sys
+import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/..")
 if PROJECT_ROOT not in sys.path:
@@ -43,13 +44,30 @@ app.add_middleware(
 
 
 class ChatRequest(BaseModel):
-    question: str
-    session_id: str
+    question: str = Field(min_length=1, max_length=20000)
+    session_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
     arm: str = "C_hybrid_rerank"
     corpus: str = "statutes"
-    chat_history: List[Dict[str, str]] = []
+    chat_history: List[Dict[str, str]] = Field(default_factory=list, max_length=100)
     memory_enabled: bool = True
     deep_analysis: bool = False
+
+    @model_validator(mode="after")
+    def validate_options(self):
+        from experiments.exp06_strategy_ablation import ARMS
+        if not self.question.strip():
+            raise ValueError("question must not be blank")
+        if self.corpus not in chat_service.CORPUS_OPTIONS or self.arm not in ARMS:
+            raise ValueError("Unknown corpus or retrieval arm")
+        if self.corpus == "both" and self.arm != "C_hybrid_rerank":
+            raise ValueError("Combined corpus requires C_hybrid_rerank")
+        if self.corpus == "statutes" and (ARMS[self.arm].get("graph") or ARMS[self.arm].get("graph_expand")
+                                         or self.arm == "C_fixed_chunking"):
+            raise ValueError("This arm requires the judgments corpus")
+        if any(t.get("role") not in ("user", "assistant") or not isinstance(t.get("content"), str)
+               or len(t["content"]) > 20000 for t in self.chat_history):
+            raise ValueError("Invalid conversation history")
+        return self
 
 
 class SessionCreateRequest(BaseModel):
@@ -63,9 +81,11 @@ def get_config():
     return {
         "arms": list(ARMS.keys()),
         "corpora": chat_service.CORPUS_OPTIONS,
-        # Actual device string (was previously hardcoded in the UI as
-        # "RTX 4060" on every machine).
         "device": describe_device(),
+        "arms_by_corpus": {c: [a for a, options in ARMS.items()
+                              if (c != "both" or a == "C_hybrid_rerank")
+                              and (c != "statutes" or not (options.get("graph") or options.get("graph_expand") or a == "C_fixed_chunking"))]
+                           for c in chat_service.CORPUS_OPTIONS},
     }
 
 
@@ -91,7 +111,7 @@ def chat(req: ChatRequest):
 
 
 @app.get("/ui/graph")
-def graph(scope: str = "rag", session_id: Optional[str] = None, max_nodes: int = 150):
+def graph(scope: str = "rag", session_id: Optional[str] = None, max_nodes: int = Query(150, ge=1, le=1000)):
     if scope == "memory":
         return build_memory_graph_data(max_observations=max_nodes)
 
@@ -178,7 +198,7 @@ def delete_session(session_id: str):
 
 
 @app.get("/ui/memory")
-def list_memory(search: Optional[str] = None, session_id: Optional[str] = None, limit: int = 30):
+def list_memory(search: Optional[str] = None, session_id: Optional[str] = None, limit: int = Query(30, ge=1, le=1000)):
     """Memory page data. With ``search``, ranks via MemoryManager.search_memory
     (semantic/recency/frequency/importance all populated). Without it, this is
     a plain recency listing -- those per-query scores don't exist outside a
@@ -226,12 +246,21 @@ def latest_trace():
 
 @app.get("/ui/trace/{trace_id}")
 def get_trace(trace_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trace_id):
+        raise HTTPException(status_code=422, detail="Invalid trace identifier")
     trace_dir = os.path.join(PROJECT_ROOT, "artifacts", "rag_traces")
     matches = glob.glob(os.path.join(trace_dir, "*", f"trace_{trace_id}.json"))
+    matches += [p for p in (os.path.join(trace_dir, f"{trace_id}.json"),
+                            os.path.join(trace_dir, f"trace_{trace_id}.json")) if os.path.isfile(p)]
     if not matches:
         raise HTTPException(status_code=404, detail="Trace not found")
     with open(matches[0], "r", encoding="utf-8") as f:
         trace = json.load(f)
+    diagnostics = trace.get("diagnostics") or {}
+    # Legacy UI wire fields are maintained while storage uses canonical diagnostics.
+    for key in ("claim_verification", "claim_error"):
+        if key in diagnostics:
+            trace[key] = diagnostics[key]
 
     # RAGTraceBuilder records chunk_id/scores/provenance but never the chunk
     # text itself (keeps trace files small) -- the live SSE `chunks` event is
@@ -241,7 +270,16 @@ def get_trace(trace_id: str):
     # corpora is not realistic (they're per-ingestion UUIDs).
     refs = trace.get("retrieved_chunk_references") or []
     if refs:
-        for corpus in chat_service.CORPORA:
+        # Captured prompt evidence remains valid when registries are replaced.
+        snapshot = dict(re.findall(
+            r"--- Context chunk \d+ \[Chunk-ID: ([^\]]*)\] ---\n(.*?)(?=\n--- Context chunk |\n\nQuestion: |\Z)",
+            trace.get("prompt_snapshot") or "", re.DOTALL))
+        for ref in refs:
+            if ref.get("chunk_id") in snapshot:
+                ref["text"] = snapshot[ref["chunk_id"]].strip()[:400]
+        corpus = (trace.get("configuration_snapshot") or {}).get("corpus")
+        corpora = [corpus] if corpus in chat_service.CORPORA else chat_service.CORPORA
+        for corpus in corpora:
             registry = chat_service.load_registry(corpus)
             if registry is None:
                 continue
@@ -375,6 +413,7 @@ def experiment_detail(key: str, source: str = "active"):
 def _read_latest_trace_file() -> Optional[Dict[str, Any]]:
     trace_dir = os.path.join(PROJECT_ROOT, "artifacts", "rag_traces")
     files = glob.glob(os.path.join(trace_dir, "*", "trace_*.json"))
+    files += glob.glob(os.path.join(trace_dir, "*.json"))
     if not files:
         return None
     latest = max(files, key=os.path.getmtime)

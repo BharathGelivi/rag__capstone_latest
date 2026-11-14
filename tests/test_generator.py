@@ -49,6 +49,15 @@ def make_chat_response(content):
 
 class TestGenerator(unittest.TestCase):
     @patch("src.generator.OpenAILike")
+    def test_nvidia_disables_native_thinking_to_preserve_answer_budget(self, mock_llm_cls):
+        Generator()
+        kwargs = mock_llm_cls.call_args.kwargs
+        self.assertEqual(
+            kwargs.get("additional_kwargs", {}).get("extra_body"),
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        )
+
+    @patch("src.generator.OpenAILike")
     def test_generate_returns_generation_result_fields(self, mock_llm_cls):
         mock_llm = MagicMock()
         mock_llm.chat.return_value = make_chat_response("This is the generated answer.")
@@ -288,6 +297,18 @@ class TestGenerateStreamReasoning(unittest.TestCase):
         deltas = list(generator.generate_stream(make_retrieval_result()))
 
         self.assertEqual("".join(deltas), "A complete answer.")
+
+
+class TestAuditGeneration(unittest.TestCase):
+    @patch("src.generator.OpenAILike")
+    def test_actual_question_and_sync_truncation_are_recorded(self, mock_llm_cls):
+        mock_llm = mock_llm_cls.return_value
+        mock_llm.chat.return_value.message.content = "Partial answer"
+        mock_llm.chat.return_value.raw = {"choices": [{"finish_reason": "length"}]}
+        generator = Generator()
+        result = generator.generate(make_retrieval_result(), question_override="Actual user question")
+        self.assertEqual(result.question, "Actual user question")
+        self.assertEqual(result.generation_metadata["finish_reason"], "length")
 
 
 if __name__ == "__main__":

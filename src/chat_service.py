@@ -17,9 +17,9 @@ import os
 import sys
 import threading
 import time
+import copy
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Any, Dict, Generator as TypingGenerator, List, Optional
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/..")
@@ -28,6 +28,7 @@ if PROJECT_ROOT not in sys.path:
 
 from src.device import describe_device
 from src.memory.memory_manager import MemoryManager
+from src.cache_utils import serialized_cache
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ CORPORA = {
 #: in ``_run_chat_turn``). Exposed as a corpus option in the UI alongside the
 #: real ones so a question can be answered from statutes and case law at once.
 CORPUS_OPTIONS = list(CORPORA.keys()) + ["both"]
+CORPORA["judgments_fixed"] = ("artifacts/legal/chunk_registry_fixed.json", "legal_corpus_fixed", "Judgments (fixed chunks)")
 
 #: Arms whose retrieval strategy is itself multi-step (interleaved
 #: retrieval/reasoning, agentic planning, or graph expansion) get a prompted
@@ -69,15 +71,28 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
-@lru_cache(maxsize=None)
+def _registry_signature(corpus):
+    path = os.path.join(PROJECT_ROOT, CORPORA[corpus][0])
+    try:
+        stat = os.stat(path)
+        return stat.st_mtime_ns, stat.st_size
+    except FileNotFoundError:
+        return None
+
+
 def load_pipeline(corpus: str = "statutes"):
-    from src.env_check import ensure_llm_credentials
+    return _load_pipeline(corpus, _registry_signature(corpus))
+
+
+@serialized_cache(maxsize=3)
+def _load_pipeline(corpus, signature):
     from src.chunk_registry import ChunkRegistry
     from src.vector_store import ChromaVectorStore
     from src.retriever import Retriever
     from src.generator import Generator
 
-    ensure_llm_credentials()
+    if not os.environ.get("NVIDIA_API_KEY"):
+        raise RuntimeError("Set NVIDIA_API_KEY in the server environment before starting chat")
 
     relative_registry, collection, _label = CORPORA[corpus]
     registry_path = os.path.join(PROJECT_ROOT, relative_registry)
@@ -94,8 +109,12 @@ def load_pipeline(corpus: str = "statutes"):
     return retriever, generator, registry, None
 
 
-@lru_cache(maxsize=None)
 def load_registry(corpus: str = "statutes"):
+    return _load_registry(corpus, _registry_signature(corpus))
+
+
+@serialized_cache(maxsize=3)
+def _load_registry(corpus, signature):
     """Just the chunk registry -- a JSON file load, no vector store or GPU
     reranker/generator involved. For read-only chunk-text lookups (e.g.
     backfilling a historical trace's chunk text, see /ui/trace in api_ui.py)
@@ -115,7 +134,7 @@ def load_registry(corpus: str = "statutes"):
     return ChunkRegistry.load_from_json(registry_path)
 
 
-@lru_cache(maxsize=1)
+@serialized_cache(maxsize=1)
 def load_knowledge_graph():
     from src.legal_graph import GRAPH_PATH, load_graph
 
@@ -125,19 +144,19 @@ def load_knowledge_graph():
     return load_graph(path)
 
 
-@lru_cache(maxsize=1)
+@serialized_cache(maxsize=1)
 def load_verifier():
     from src.claim_verifier import ClaimVerifier
     return ClaimVerifier()
 
 
-@lru_cache(maxsize=1)
+@serialized_cache(maxsize=1)
 def load_decomposer():
     from src.claim_decomposer import ClaimDecomposer
     return ClaimDecomposer()
 
 
-@lru_cache(maxsize=1)
+@serialized_cache(maxsize=1)
 def get_memory_manager() -> MemoryManager:
     mm = MemoryManager()
     mm.initialize()
@@ -156,6 +175,10 @@ def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
     try:
         decomposer = load_decomposer()
         claim_set = decomposer.decompose(trace)
+        trace.diagnostics = trace.diagnostics or {}
+        trace.diagnostics["decomposition_success"] = claim_set.metadata.get("diagnostics", {}).get("success", True)
+        if not trace.diagnostics["decomposition_success"]:
+            return {"error": "Claim decomposition was unavailable"}
         claim_ids = [c.candidate_id for c in claim_set.candidate_claims]
         if not claim_set.candidate_claims:
             return {"claim_ids": [], "claim_count": 0,
@@ -187,8 +210,9 @@ def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
                 ],
             },
         }
-    except Exception as exc:
-        return {"error": str(exc)}
+    except Exception:
+        logger.exception("Claim analysis failed")
+        return {"error": "Claim analysis was unavailable"}
 
 
 def memory_evidence_chunks(entries: List[Any]) -> List[Any]:
@@ -233,14 +257,18 @@ def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> None:
     try:
         with open(trace_path, "r", encoding="utf-8") as f:
             trace_json = json.load(f)
+        trace_json["diagnostics"] = trace_json.get("diagnostics") or {}
         if "verification" in outcome:
-            trace_json["claim_verification"] = outcome["verification"]
+            trace_json.setdefault("diagnostics", {})["claim_verification"] = outcome["verification"]
+            trace_json.pop("claim_verification", None)
+            trace_json.pop("claim_error", None)
+            trace_json["diagnostics"].pop("claim_error", None)
         if "error" in outcome:
-            trace_json["claim_error"] = outcome["error"]
+            trace_json.setdefault("diagnostics", {})["claim_error"] = outcome["error"]
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(trace_json, f, indent=2)
     except Exception:
-        pass
+        logger.exception("Diagnostic persistence failed for %s", trace_path)
 
 
 def run_chat_turn(
@@ -280,6 +308,7 @@ def _run_chat_turn(
     deep_analysis: bool,
 ) -> TypingGenerator[Dict[str, Any], None, None]:
     mm = get_memory_manager()
+    pipeline_corpus = "judgments_fixed" if arm == "C_fixed_chunking" else corpus
     if corpus == "both":
         # Combined mode has no single retriever/registry -- each corpus's
         # retriever is pulled from the (lru_cache'd) per-corpus pipeline in
@@ -295,12 +324,14 @@ def _run_chat_turn(
         registry = None
         arm = "C_hybrid_rerank"
     else:
-        retriever, generator, registry, error = load_pipeline(corpus)
+        retriever, generator, registry, error = load_pipeline(pipeline_corpus)
         if error:
             yield {"event": "error", "message": error}
             return
 
+    generator = copy.copy(generator)
     t0 = time.time()
+    warnings = []
 
     yield {"event": "stage", "stage": "memory", "label": "Searching memory…"}
 
@@ -334,8 +365,10 @@ def _run_chat_turn(
                 for r in memory_results
             ]
         except Exception:
+            logger.exception("Memory recall failed")
+            warnings.append("Memory recall was unavailable")
             memory_context = ""
-        memory_time = time.time() - t_mem
+    memory_time = time.time() - t_mem
     yield {
         "event": "memory",
         "recalled": recalled_memories,
@@ -406,6 +439,9 @@ def _run_chat_turn(
         else:
             needs_graph = ARMS[arm].get("graph") or ARMS[arm].get("graph_expand")
             graph = load_knowledge_graph() if needs_graph else None
+            if needs_graph and graph is None:
+                yield {"event": "error", "message": "This strategy requires an ingested legal knowledge graph."}
+                return
             chunks, strategy_meta, graph_added = execute_arm(
                 arm, search_query, registry, retriever, graph, generator.llm)
             retrieval_result = RetrievalResult(
@@ -418,6 +454,12 @@ def _run_chat_turn(
                 retrieval_metadata={**strategy_meta, "arm": arm, "graph_added": graph_added},
             )
 
+    from experiments.exp06_strategy_ablation import ARMS
+    config = ARMS[arm]
+    retrieval_result.retrieval_metadata.update({"corpus": corpus, "arm": arm,
+        "registry_path": CORPORA[pipeline_corpus][0] if pipeline_corpus in CORPORA else None,
+        "chunking_strategy": config["chunking"], "retrieval_mode": config["mode"],
+        "bm25_enabled": config["mode"] in ("hybrid", "bm25"), "reranker_enabled": config["rerank"]})
     retrieval_time = time.time() - t1
     yield {
         "event": "chunks",
@@ -472,7 +514,8 @@ def _run_chat_turn(
     generation_time = time.time() - t2
 
     if generation_result.error:
-        yield {"event": "error", "message": generation_result.error}
+        logger.error("Generation failed: %s", generation_result.error)
+        yield {"event": "error", "message": "Generation failed. Please retry."}
         return
 
     # Step 4: RAGTrace
@@ -555,21 +598,22 @@ def _run_chat_turn(
     # never matched anything, which is why this metric silently always returned
     # the 0.85 fallback. The question side gets the same BGE query prefix the
     # retriever applies, so both embeddings are in the model's query space.
-    answer_relevancy = 0.85
+    answer_relevancy = None
     try:
         from configs.models import BGE_QUERY_INSTRUCTION
 
         if retriever is not None:
-            q_emb = retriever.embed_model.get_text_embedding(BGE_QUERY_INSTRUCTION + question)
-            a_emb = retriever.embed_model.get_text_embedding(generation_result.generated_answer[:600])
+            with GPU_LOCK:
+                q_emb = retriever.embed_model.get_text_embedding(BGE_QUERY_INSTRUCTION + question)
+                a_emb = retriever.embed_model.get_text_embedding(generation_result.generated_answer[:600])
             answer_relevancy = round(max(0.0, min(1.0, cosine_sim(q_emb, a_emb))), 4)
     except Exception:
         pass
 
     # 2. Context Precision & Context Relevancy
     scores = [c.similarity_score for c in retrieval_result.retrieved_chunks]
-    context_precision = round(sum(scores) / len(scores), 4) if scores else 0.0
-    context_relevancy = round(len([s for s in scores if s >= 0.45]) / len(scores), 4) if scores else 0.0
+    context_precision = None
+    context_relevancy = None
 
     # 3. Citation Analysis
     chunk_pattern = re.compile(r'\[(?:Chunk-ID:\s*|Chunk:\s*)([a-f0-9\-]+)\]', re.IGNORECASE)
@@ -579,7 +623,7 @@ def _run_chat_turn(
         grounded_citations = cited_ids.intersection(retrieved_ids)
         citation_precision = round(len(grounded_citations) / len(cited_ids), 4)
     else:
-        citation_precision = 1.0 if retrieval_result.retrieved_chunks else 0.0
+        citation_precision = None
 
     # 4. Groundedness & Faithfulness
     ans_text = generation_result.generated_answer.lower()
@@ -593,8 +637,11 @@ def _run_chat_turn(
             overlap = sum(1 for w in words if w in combined_context) / len(words)
             if overlap >= 0.45:
                 grounded_count += 1
-    groundedness = round(grounded_count / len(sentences), 4) if sentences else 0.90
-    faithfulness = round((groundedness * 0.65) + (citation_precision * 0.35), 4)
+    groundedness = round(grounded_count / len(sentences), 4) if sentences else None
+    faithfulness = None
+    if deep_analysis and strategy_event.get("verification", {}).get("results"):
+        results = strategy_event["verification"]["results"]
+        faithfulness = round(sum(r["status"] == "SUPPORTED" for r in results) / len(results), 4)
 
     # Query the actual device rather than hardcoding a specific GPU model --
     # the old string claimed a 4060 on every machine that had any CUDA device.
@@ -610,6 +657,9 @@ def _run_chat_turn(
         "citation_precision": citation_precision,
         "citations_found": len(cited_ids),
         "device": device_name,
+        "metric_methods": {"groundedness": "lexical_overlap_heuristic", "answer_relevancy": "embedding_cosine",
+                           "faithfulness": "verified_supported_claim_fraction", "context_precision": "not_computed",
+                           "context_relevancy": "not_computed"},
     }
 
     # Step 7: save to memory -- unconditional, same as the fast path in
@@ -625,7 +675,8 @@ def _run_chat_turn(
                 claim_ids=claim_ids,
             )
         except Exception:
-            pass
+            logger.exception("Interaction persistence failed")
+            warnings.append("The interaction could not be saved to memory")
 
     yield {
         "event": "done",
@@ -635,4 +686,6 @@ def _run_chat_turn(
         "generation_time": round(generation_time, 3),
         "retrieval_time": round(retrieval_time, 3),
         "memory_time": round(memory_time if memory_enabled else 0.0, 3),
+        "status": "partial" if warnings or generation_result.generation_metadata.get("finish_reason") == "length" else "completed",
+        "warnings": warnings,
     }

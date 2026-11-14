@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 import os
+import math
 from typing import Any, Dict, List, Optional
 
 RESULTS_DIR = "artifacts/benchmark_comparison"
@@ -26,6 +27,13 @@ RESULTS_DIR = "artifacts/benchmark_comparison"
 # names so external imports of ``_pearson_r``/``_cohens_kappa`` keep working.
 from src.stats import pearson_r as _pearson_r
 from src.stats import cohens_kappa as _cohens_kappa
+
+
+def _finite(value):
+    try:
+        return value is not None and not isinstance(value, bool) and math.isfinite(float(value))
+    except (ValueError, TypeError):
+        return False
 
 
 def load_results(path: str) -> List[Dict[str, Any]]:
@@ -57,11 +65,11 @@ def _xrag_flags(results: List[Dict[str, Any]]) -> List[bool]:
 
 
 def _ragas_flags(results: List[Dict[str, Any]], threshold: float) -> List[Optional[bool]]:
-    return [(r.get("ragas_faithfulness") < threshold) if r.get("ragas_faithfulness") is not None else None for r in results]
+    return [(float(r["ragas_faithfulness"]) < threshold) if _finite(r.get("ragas_faithfulness")) else None for r in results]
 
 
 def _ragchecker_flags(results: List[Dict[str, Any]], threshold: float) -> List[Optional[bool]]:
-    return [(r.get("ragchecker_hallucination") > threshold) if r.get("ragchecker_hallucination") is not None else None for r in results]
+    return [(float(r["ragchecker_hallucination"]) > threshold) if _finite(r.get("ragchecker_hallucination")) else None for r in results]
 
 
 def compute_agreement(

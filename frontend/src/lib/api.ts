@@ -3,11 +3,12 @@ export const API_BASE = "http://127.0.0.1:8010";
 export interface Config {
   arms: string[];
   corpora: string[];
-  device?: string;
+  device: string;
+  arms_by_corpus: Record<string, string[]>;
 }
 
 export async function getConfig(): Promise<Config> {
-  const r = await fetch(`${API_BASE}/ui/config`);
+  const r = await checkedFetch(`${API_BASE}/ui/config`);
   return r.json();
 }
 
@@ -56,7 +57,7 @@ export interface ChatRequest {
  * separator rather than assuming one read == one event.
  */
 export async function* streamChat(req: ChatRequest, signal?: AbortSignal): AsyncGenerator<ChatEvent> {
-  const res = await fetch(`${API_BASE}/ui/chat`, {
+  const res = await checkedFetch(`${API_BASE}/ui/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
@@ -74,20 +75,21 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
+      buffer = (buffer + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
       let sep;
       while ((sep = buffer.indexOf("\n\n")) !== -1) {
         const frame = buffer.slice(0, sep);
         buffer = buffer.slice(sep + 2);
-        if (frame.startsWith("data: ")) {
-          const event = JSON.parse(frame.slice(6)) as ChatEvent;
-          terminal ||= event.event === 'done' || event.event === 'error';
+        const data = frame.split("\n").filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
+        if (data) {
+          const event = JSON.parse(data) as ChatEvent;
+          terminal ||= event.event === "done" || event.event === "error";
           yield event;
+          if (terminal) return;
         }
       }
     }
-    if (!terminal) throw new Error('The chat connection ended before completion. Please retry.');
+    if (!terminal) throw new Error("The chat connection ended before completion. Please retry.");
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -107,8 +109,8 @@ export interface GraphData {
   truncated: boolean;
 }
 
-export async function getGraph(scope: "rag" | "legal" | "memory"): Promise<GraphData> {
-  const r = await fetch(`${API_BASE}/ui/graph?scope=${scope}`);
+export async function getGraph(scope: "rag" | "legal" | "memory", signal?: AbortSignal): Promise<GraphData> {
+  const r = await checkedFetch(`${API_BASE}/ui/graph?scope=${scope}`, { signal });
   return r.json();
 }
 
@@ -121,12 +123,12 @@ export interface Session {
 }
 
 export async function getSessions(): Promise<Session[]> {
-  const r = await fetch(`${API_BASE}/ui/sessions`);
+  const r = await checkedFetch(`${API_BASE}/ui/sessions`);
   return r.json();
 }
 
 export async function createSession(title: string = "New Session"): Promise<Session> {
-  const r = await fetch(`${API_BASE}/ui/sessions`, {
+  const r = await checkedFetch(`${API_BASE}/ui/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -135,11 +137,11 @@ export async function createSession(title: string = "New Session"): Promise<Sess
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await fetch(`${API_BASE}/ui/sessions/${id}`, { method: "DELETE" });
+  await checkedFetch(`${API_BASE}/ui/sessions/${id}`, { method: "DELETE" });
 }
 
 export async function renameSession(id: string, title: string): Promise<void> {
-  await fetch(`${API_BASE}/ui/sessions/${id}`, {
+  await checkedFetch(`${API_BASE}/ui/sessions/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -147,9 +149,9 @@ export async function renameSession(id: string, title: string): Promise<void> {
 }
 
 export async function getSessionMessages(
-  id: string
+  id: string, signal?: AbortSignal
 ): Promise<{ role: "user" | "assistant"; content: string; trace_id?: string | null }[]> {
-  const r = await fetch(`${API_BASE}/ui/sessions/${id}/messages`);
+  const r = await checkedFetch(`${API_BASE}/ui/sessions/${encodeURIComponent(id)}/messages`, { signal });
   return r.json();
 }
 
@@ -181,13 +183,13 @@ export interface ScoredMemory {
 }
 
 export async function getMemory(
-  opts: { search?: string; sessionId?: string; limit?: number } = {}
+  opts: { search?: string; sessionId?: string; limit?: number } = {}, signal?: AbortSignal
 ): Promise<{ memories: ScoredMemory[]; searched: boolean }> {
   const params = new URLSearchParams();
   if (opts.search) params.set("search", opts.search);
   if (opts.sessionId) params.set("session_id", opts.sessionId);
   if (opts.limit) params.set("limit", String(opts.limit));
-  const r = await fetch(`${API_BASE}/ui/memory?${params}`);
+  const r = await checkedFetch(`${API_BASE}/ui/memory?${params}`, { signal });
   return r.json();
 }
 
@@ -246,15 +248,17 @@ export interface TraceData {
   claim_error?: string;
 }
 
-export async function getLatestTrace(): Promise<TraceData | null> {
-  const r = await fetch(`${API_BASE}/ui/trace/latest`);
-  if (!r.ok) return null;
+export async function getLatestTrace(signal?: AbortSignal): Promise<TraceData | null> {
+  const r = await fetch(`${API_BASE}/ui/trace/latest`, { signal });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`Unable to load trace (HTTP ${r.status})`);
   return r.json();
 }
 
-export async function getTrace(traceId: string): Promise<TraceData | null> {
-  const r = await fetch(`${API_BASE}/ui/trace/${traceId}`);
-  if (!r.ok) return null;
+export async function getTrace(traceId: string, signal?: AbortSignal): Promise<TraceData | null> {
+  const r = await fetch(`${API_BASE}/ui/trace/${encodeURIComponent(traceId)}`, { signal });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`Unable to load trace (HTTP ${r.status})`);
   return r.json();
 }
 
@@ -311,3 +315,9 @@ export async function getDiagnosticReports(): Promise<DiagnosticReport[]> {
   return (await r.json()).reports;
 }
 
+
+async function checkedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init);
+  if (!response.ok) throw new Error(`Request failed (HTTP ${response.status}). Please retry.`);
+  return response;
+}
