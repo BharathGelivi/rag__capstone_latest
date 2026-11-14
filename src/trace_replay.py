@@ -167,13 +167,17 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
         with chat_service.GPU_LOCK:
             if corpus == "both":
                 chunks = []
+                candidates = []
                 for name in ("statutes", "judgments"):
                     retriever, _, _, error = chat_service.load_pipeline(name)
                     if error:
                         raise ValueError(error)
-                    chunks.extend(retriever.retrieve(search_query, top_n=top_k).retrieved_chunks)
+                    result = retriever.retrieve(search_query, top_n=top_k)
+                    chunks.extend(result.retrieved_chunks)
+                    candidates.extend(result.retrieval_metadata.get("candidate_chunks", []))
                 chunks = sorted(chunks, key=lambda c: c.reranker_score, reverse=True)[:top_k]
-                metadata = {"combined_corpora": ["statutes", "judgments"]}
+                metadata = {"combined_corpora": ["statutes", "judgments"], "candidate_chunks": candidates,
+                            "candidate_capture_scope": "Both corpus retrieval calls, before final merging and truncation."}
             else:
                 retriever, planner, registry, error = chat_service.load_pipeline(pipeline_corpus)
                 if error:

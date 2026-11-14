@@ -480,6 +480,15 @@ class ClaimVerifier:
         results["best_sentence"] = best_sentence
         return results
 
+    def check_cited_chunk(self, claim_text: str, chunk: RetrievedChunk) -> Dict[str, Any]:
+        """Check only the cited passage with local NLI, without LLM escalation."""
+        outcome = self._verify_against_sources(claim_text, [(chunk.chunk_id, chunk.rank, chunk.chunk_text)])
+        best = outcome["best_sentence"]
+        return {"chunk_id": chunk.chunk_id, "status": outcome["status"].value,
+                "entailment_score": outcome["entailment"], "contradiction_score": outcome["contradiction"],
+                "neutral_score": outcome["neutral"], "evidence_text": best.text if best else None,
+                "reason": outcome["reason"], "verified_by": "nli"}
+
     def verify_claim(self, claim: CandidateClaim, chunks: List[RetrievedChunk]) -> VerificationResult:
         """Verifies a single claim against all retrieved chunks at the sentence level."""
         t_start = time.time()

@@ -205,6 +205,7 @@ class IRCoTRetriever:
         # --- Hop 0: the question itself ------------------------------------
         step_start = time.time()
         first = self._retrieve(question, top_n=self.first_hop_top_n)
+        candidates = list(first.retrieval_metadata.get("candidate_chunks", []))
         retrieval_calls += 1
         for chunk in first.retrieved_chunks:
             if chunk.chunk_id not in seen:
@@ -271,6 +272,7 @@ class IRCoTRetriever:
 
             queries.append(next_query)
             hop = self._retrieve(next_query, top_n=self.chunks_per_step)
+            candidates.extend(hop.retrieval_metadata.get("candidate_chunks", []))
             retrieval_calls += 1
 
             new_ids = []
@@ -316,6 +318,8 @@ class IRCoTRetriever:
             top_k=len(evidence),
             retrieval_metadata={
                 **first.retrieval_metadata,
+                "candidate_chunks": candidates,
+                "candidate_capture_scope": "Ranked candidates across all IRCoT retrieval calls.",
                 "strategy": "ircot",
                 "ircot_iterations": len(steps),
                 "ircot_termination_reason": termination,

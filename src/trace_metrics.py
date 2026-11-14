@@ -66,6 +66,10 @@ _CACHE: Dict[str, Dict[str, Any]] = {}
 _CACHE_MAX = 32
 
 
+def invalidate_framework_panel(trace_id):
+    _CACHE.pop(trace_id, None)
+
+
 def _trace_file(trace_id: str) -> Optional[str]:
     trace_dir = os.path.join(chat_service.PROJECT_ROOT, "artifacts", "rag_traces")
     matches = glob.glob(os.path.join(trace_dir, "*", f"trace_{trace_id}.json"))

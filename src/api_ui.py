@@ -353,6 +353,77 @@ def run_regression_suite(request: RunRegressionRequest):
     return {"mode": request.mode, "passed": all(r["passed"] for r in results), "cases": results}
 
 
+def _evidence_view(trace_id):
+    from dataclasses import asdict
+    from src.trace_replay import captured_chunks
+    trace = load_trace(trace_id)
+    value = asdict(trace)
+    try:
+        texts = {c.chunk_id: c.chunk_text for c in captured_chunks(trace)}
+        for ref in value["retrieved_chunk_references"]:
+            ref["text"] = texts[ref["chunk_id"]]
+    except ValueError:
+        pass
+    return value
+
+
+@app.get("/ui/trace/{trace_id}/evidence")
+def evidence_debugger(trace_id: str):
+    from src.evidence_debugger import build_evidence_debugger
+    try:
+        value = _evidence_view(trace_id)
+        result = build_evidence_debugger(value)
+        result["sources"] = value["retrieved_chunk_references"] + [
+            {**m, "text": m.get("chunk_text", "")} for m in (value.get("diagnostics") or {}).get("memory_evidence", [])]
+        return result
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/ui/trace/{trace_id}/evidence/analyze")
+def analyze_evidence(trace_id: str):
+    from src.trace_replay import captured_chunks
+    from src.retriever import RetrievedChunk
+    try:
+        trace = load_trace(trace_id)
+        memory = [RetrievedChunk(**v) for v in (trace.diagnostics or {}).get("memory_evidence", [])]
+        outcome = chat_service.deep_analyze(trace, captured_chunks(trace) + memory)
+        if "error" in outcome:
+            raise HTTPException(502, outcome["error"])
+        # Save only analysis into the same recorded trace file, not a new run.
+        root = os.path.join(PROJECT_ROOT, "artifacts", "rag_traces")
+        paths = glob.glob(os.path.join(root, "*", f"trace_{trace_id}.json"))
+        paths += [p for p in (os.path.join(root, f"{trace_id}.json"), os.path.join(root, f"trace_{trace_id}.json")) if os.path.isfile(p)]
+        if not chat_service.persist_deep_analysis(paths[0], outcome):
+            raise HTTPException(500, "Analysis completed but could not be saved. Please retry.")
+        from src.trace_metrics import invalidate_framework_panel
+        invalidate_framework_panel(trace_id)
+        return evidence_debugger(trace_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/ui/trace/{trace_id}/source/{chunk_id}")
+def evidence_source(trace_id: str, chunk_id: str):
+    from src.evidence_sources import resolve_source
+    try:
+        trace = load_trace(trace_id)
+        refs = trace.retrieved_chunk_references + ((trace.diagnostics or {}).get("retrieval_metadata") or {}).get("candidate_chunks", [])
+        ref = next((c for c in refs if c["chunk_id"] == chunk_id), None)
+        path = resolve_source(PROJECT_ROOT, ref.get("source_file", "")) if ref else None
+        if path is None:
+            raise HTTPException(404, "Source PDF is unavailable; use the captured passage")
+        return FileResponse(path, media_type="application/pdf", content_disposition_type="inline")
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.get("/ui/trace/{trace_id}/replay")
 def replay_settings(trace_id: str):
     try:

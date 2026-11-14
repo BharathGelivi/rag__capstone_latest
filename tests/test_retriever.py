@@ -38,6 +38,18 @@ class FakeVectorStore(VectorStore):
 
 
 class TestRetriever(unittest.TestCase):
+    def test_discarded_candidates_keep_text_provenance_and_ranking(self):
+        retriever = self._make_retriever()
+        self.mock_cross_encoder.predict.return_value = [0.9, 0.1]
+        result = retriever.retrieve("alpha bravo", top_n=1)
+        snapshots = result.retrieval_metadata["candidate_chunks"]
+        self.assertEqual(len(result.retrieved_chunks), 1)
+        self.assertEqual(len(snapshots), 2)
+        discarded = next(c for c in snapshots if c["chunk_id"] != result.retrieved_chunk_ids[0])
+        self.assertTrue(discarded["chunk_text"])
+        self.assertEqual(discarded["source_file"], "doc.pdf")
+        self.assertIn("candidate_rank", discarded)
+
     def setUp(self):
         self.registry = ChunkRegistry()
         self.registry.register([

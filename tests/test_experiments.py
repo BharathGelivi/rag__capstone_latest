@@ -672,11 +672,11 @@ class TestRetrieverSeams(unittest.TestCase):
 
     def test_retrieve_is_rank_candidates_then_rerank_then_truncate(self):
         from configs.pipeline import RERANKER_TOP_N, RERANK_INPUT_SIZE, RETRIEVAL_MODE
-        from src.retriever import Retriever
+        from src.retriever import Retriever, RetrievedChunk
 
         chunks = [
-            type("C", (), {"chunk_id": f"c{i}", "chunk_text": f"t{i}", "rank": i + 1,
-                           "similarity_score": 0.0, "reranker_score": 0.0})()
+            RetrievedChunk(chunk_id=f"c{i}", chunk_text=f"t{i}", rank=i + 1,
+                           similarity_score=0.0, page_number="1", source_file="fixture.txt", chunk_index=i)
             for i in range(4)
         ]
         # Bare instance: __init__ loads a cross-encoder and an embedding model,

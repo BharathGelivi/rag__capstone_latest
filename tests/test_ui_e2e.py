@@ -196,6 +196,31 @@ class TestUIEndToEnd(unittest.TestCase):
         self.assertEqual(saved[0]["expectations"]["required_facts"], ["Required fact"])
         self.assertEqual(saved[0]["expectations"]["expected_evidence"], ["c1"])
 
+    def test_sentence_claim_opens_exact_passage_and_bad_citation_is_visible(self):
+        self.page.unroute("http://127.0.0.1:8010/**")
+        claim = {"claim_id": "claim1", "claim_text": "The penalty is 50 units.", "status": "SUPPORTED",
+                 "best_chunk_id": "c1", "reason": "Supported by c1", "verified_by": "nli",
+                 "entailment_score": .95, "contradiction_score": .01, "neutral_score": .04,
+                 "citation_checks": [{"chunk_id": "c2", "status": "UNSUPPORTED", "reason": "Wrong cited passage"}]}
+        sources = [{"chunk_id": "c1", "text": "Exact penalty passage: 50 units.", "source_file": "act.pdf", "page_number": "7", "rank": 1, "similarity_score": .9},
+                   {"chunk_id": "c2", "text": "Unrelated source paragraph.", "source_file": "other.pdf", "page_number": "2", "rank": 2, "similarity_score": .3}]
+        def routes(route):
+            path = route.request.url.split("8010")[-1]
+            if path == "/ui/trace/fixture": route.fulfill(json={"trace_id": "fixture", "generated_answer": "The penalty is 50 units. [Chunk-ID: c2]", "retrieved_chunk_references": sources, "claim_verification": {"results": [claim]}})
+            elif path == "/ui/trace/fixture/evidence":
+                route.fulfill(json={"claims": [claim], "sentences": [{"sentence_id": "S1", "text": "The penalty is 50 units. [Chunk-ID: c2]", "citations": ["c2"], "claims": [claim]}],
+                    "sources": sources, "excluded_candidates": [], "candidate_capture": "unavailable", "candidate_scope": "legacy", "unmapped_claim_ids": [], "signals": [], "note": "Model support is not proof of truth."})
+            else: self.fixture(route)
+        self.page.route("http://127.0.0.1:8010/**", routes)
+        self.open_chat(); self.send()
+        self.page.get_by_role("button", name="Evidence debugger", exact=True).click()
+        self.page.get_by_role("button", name="SUPPORTED: The penalty is 50 units.", exact=True).click()
+        source = self.page.get_by_role("region", name="Selected source passage")
+        self.assertIn("Exact penalty passage: 50 units.", source.inner_text())
+        self.assertIn("Page 7", source.inner_text())
+        self.assertIn("#page=7", source.get_by_role("link").get_attribute("href"))
+        self.assertIn("Wrong cited passage", self.page.get_by_label("Sentence evidence debugger").inner_text())
+
     def test_regression_suite_displays_failed_snapshot_assertions(self):
         self.page.unroute("http://127.0.0.1:8010/**")
         def routes(route):

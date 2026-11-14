@@ -8,6 +8,15 @@ from src.retriever import RetrievedChunk
 from src.claim_decomposer import CandidateClaim, CandidateClaimSet
 
 class TestClaimVerifier(unittest.TestCase):
+    def test_citation_check_uses_only_the_named_chunk_and_never_escalates(self):
+        chunk = RetrievedChunk("cited", .9, 1, "1", "doc.pdf", 0, "Cited passage.")
+        with patch.object(self.verifier, "_llm_judge", side_effect=AssertionError("remote call")):
+            value = self.verifier.check_cited_chunk("This claim is supported.", chunk)
+        self.assertEqual(value["chunk_id"], "cited")
+        self.assertEqual(value["status"], "SUPPORTED")
+        batch = self.mock_nli.call_args.args[0]
+        self.assertEqual(batch[0]["text"], "Cited passage.")
+
     @patch('src.claim_verifier.pipeline')
     def setUp(self, mock_pipeline):
         # Create a mock pipeline that returns predefined scores based on the hypothesis

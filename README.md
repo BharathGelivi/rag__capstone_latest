@@ -2,7 +2,7 @@
 
 ## Save failures as regression cases
 
-Every saved answer has a **Save as test case** action.
+Every saved answer has **Save as test case** and **Evidence debugger** actions.
 Specify expected passage IDs, required facts, forbidden claims, and whether an
 answer must refuse, may refuse, or must answer. Cases are written to
 `eval/regression_cases/<id>.json`; saving a failing case does not turn it into
@@ -45,6 +45,32 @@ Fork PRs do not receive secrets, so their live evaluation cannot report a pass.
 The workflow uses `pull_request`, not privileged `pull_request_target`.
 Its quality-gate pattern follows the [Promptfoo CI reference](https://www.promptfoo.dev/docs/integrations/ci-cd/),
 using this project's runner rather than adding Promptfoo as a dependency.
+
+## Debug sentence evidence and citations
+
+The evidence explorer maps answer spans to extracted claims and the verifier's
+best passage. Clicking a mapped claim opens the full captured passage and page;
+PDF links serve only recorded sources within `data/` or `artifacts/`. The
+current PDF may differ from the immutable captured text.
+
+New deep analyses separately score each cited passage with local NLI. A claim
+can be supported by one passage while its cited passage fails support. Citation
+checks recognize `Chunk-ID`/`Chunk` markers, known bare chunk IDs and UUID-like
+bracketed IDs; unrelated bracketed legal references are not silently treated
+as chunk citations. A citation-only line after a sentence is attached to that
+sentence for inspection. Legacy
+traces show unavailable mappings/checks until **Analyze evidence and citations**
+is run. That action can call NVIDIA for decomposition and ambiguous judging.
+Sentence boundaries are approximate; unmapped sentences are never marked
+supported merely because no claim was extracted.
+
+New retrieval traces preserve ranked candidate text, source, page and scores,
+including candidates omitted from the final prompt. IRCoT and agentic traces
+collect candidates across retrieval calls. Older traces cannot reconstruct
+discarded candidates from a changed index. Ranking does not itself establish
+relevance. The debugger distinguishes observed support/citation issues from
+uncertain judging and leaves retrieval failure unconfirmed without expected
+evidence labels from a regression case.
 
 ## Replay and compare a saved trace
 

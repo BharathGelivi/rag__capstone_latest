@@ -232,6 +232,9 @@ export interface ClaimVerification {
   best_chunk_rank: number | null;
   evidence_text: string | null;
   verified_by: "nli" | "llm";
+  character_start?: number;
+  character_end?: number;
+  citation_checks?: Array<{chunk_id: string; status: string; reason: string; entailment_score?: number}>;
 }
 
 export interface CaseExpectations {
@@ -245,6 +248,15 @@ export interface CaseResult {
   checks: Array<{kind: string; assertion?: string; status: string; detail?: string}>;
 }
 export interface SavedCase {case_id: string; name: string; source_trace_id: string; expectations: CaseExpectations}
+export interface EvidenceDebugData {
+  claims: ClaimVerification[];
+  sentences: Array<{sentence_id: string; text: string; citations: string[]; claims: ClaimVerification[]}>;
+  unmapped_claim_ids: string[];
+  sources: TraceChunkReference[];
+  excluded_candidates: Array<TraceChunkReference & {chunk_text?: string; candidate_rank?: number; reranker_score?: number; observations?: Array<{retrieval_query?: string; candidate_rank?: number; reranker_score?: number}>}>;
+  candidate_capture: "captured" | "unavailable"; candidate_scope: string;
+  signals: Array<{kind: string; message: string}>; note: string;
+}
 export function saveRegressionCase(traceId: string, name: string, expectations: CaseExpectations): Promise<{case_id: string; path: string; baseline: CaseResult}> {
   return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/regression-cases`, {
     method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name, expectations}),
@@ -255,6 +267,12 @@ export function getRegressionCases(signal?: AbortSignal): Promise<SavedCase[]> {
 }
 export function runRegressionCases(caseIds: string[], mode: string): Promise<{mode: string; passed: boolean; cases: CaseResult[]}> {
   return replayResponse("/ui/regression-cases/run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({mode, case_ids: caseIds})});
+}
+export function getEvidenceDebug(traceId: string, signal?: AbortSignal): Promise<EvidenceDebugData> {
+  return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/evidence`, {signal});
+}
+export function analyzeEvidence(traceId: string): Promise<EvidenceDebugData> {
+  return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/evidence/analyze`, {method: "POST"});
 }
 
 export interface TraceData {

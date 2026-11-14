@@ -149,10 +149,12 @@ class AgenticRetriever:
 
     # -- actions ---------------------------------------------------------
 
-    def _search(self, query: str, mode: Optional[str], top_n: int) -> List[RetrievedChunk]:
+    def _search(self, query: str, mode: Optional[str], top_n: int, candidates=None) -> List[RetrievedChunk]:
         result = self.retriever.retrieve(
             query, mode=mode or self.retrieval_mode, rerank=self.rerank, top_n=top_n
         )
+        if candidates is not None:
+            candidates.extend(result.retrieval_metadata.get("candidate_chunks", []))
         return list(result.retrieved_chunks)
 
     def _graph_expand(self, seed_ids: Sequence[str], relations=None):
@@ -223,6 +225,7 @@ class AgenticRetriever:
         first_result = self.retriever.retrieve(
             question, mode=self.retrieval_mode, rerank=self.rerank
         )
+        candidates = list(first_result.retrieval_metadata.get("candidate_chunks", []))
         retrieval_calls += 1
         for chunk in first_result.retrieved_chunks:
             if chunk.chunk_id not in seen:
@@ -292,18 +295,18 @@ class AgenticRetriever:
             hits: List[RetrievedChunk] = []
 
             if action == "semantic_search":
-                hits = self._search(arg or question, "hybrid", CHUNKS_PER_ACTION)
+                hits = self._search(arg or question, "hybrid", CHUNKS_PER_ACTION, candidates)
                 step.retrieval_calls = 1
                 retrieval_calls += 1
             elif action == "lexical_search":
-                hits = self._search(arg or question, "bm25", CHUNKS_PER_ACTION)
+                hits = self._search(arg or question, "bm25", CHUNKS_PER_ACTION, candidates)
                 step.retrieval_calls = 1
                 retrieval_calls += 1
             elif action == "contradiction_search":
                 # Two complementary probes: lexical terms of art, and the
                 # graph's own adverse-treatment edges.
                 probe = f"{arg} {CONTRADICTION_TERMS}".strip()
-                hits = self._search(probe, "bm25", CHUNKS_PER_ACTION)
+                hits = self._search(probe, "bm25", CHUNKS_PER_ACTION, candidates)
                 step.retrieval_calls = 1
                 retrieval_calls += 1
                 graph_hits = self._graph_expand([c.chunk_id for c in evidence[:5]],
@@ -355,6 +358,8 @@ class AgenticRetriever:
             top_k=len(evidence),
             retrieval_metadata={
                 **first_result.retrieval_metadata,
+                "candidate_chunks": candidates,
+                "candidate_capture_scope": "Ranked candidates across all agentic retrieval calls.",
                 "strategy": "agentic",
                 "agent_steps": len(steps),
                 "agent_actions": actions_taken,

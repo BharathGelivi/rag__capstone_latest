@@ -1456,3 +1456,5 @@ body {
 .regression-suite .replay-check { display: flex; align-items: center; gap: 8px; }
 .answer-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .answer-evidence-panel, .regression-save:has(.regression-form) { flex-basis: 100%; min-width: 0; }
+.evidence-sentence, .captured-source { margin: 14px 0; padding: 14px; border: 1px solid var(--color-divider); overflow-wrap: anywhere; }
+.evidence-debugger button { white-space: normal; text-align: left; }

@@ -10,7 +10,7 @@ import logging
 import re
 from src.cache_utils import serialized_cache
 from typing import List, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
@@ -301,6 +301,7 @@ class Retriever:
         # no reason to score a window wider than the final context size.
         pool = RERANK_INPUT_SIZE if rerank_enabled else final_n
         candidates, fusion_metadata = self.rank_candidates(question, pool, mode=mode)
+        candidate_ranks = {c.chunk_id: i for i, c in enumerate(candidates, 1)}
         question_dim = fusion_metadata["question_embedding_dimension"]
 
         # 4. Rerank the RRF candidates using Cross-Encoder, then truncate to
@@ -337,6 +338,9 @@ class Retriever:
                 "reranker_model": RERANKER_MODEL_NAME if rerank_enabled else None,
                 "rerank_input_size": pool,
                 "reranker_top_n": final_n,
+                "candidate_chunks": [{**asdict(c), "candidate_rank": candidate_ranks[c.chunk_id], "retrieval_query": question}
+                                     for c in candidates],
+                "candidate_capture_scope": "Ranked candidates from this retrieval call.",
                 "pre_rerank_candidate_pool_size": fusion_metadata["pre_rerank_candidate_pool_size"],
                 "pre_rerank_min_dense_distance": fusion_metadata["pre_rerank_min_dense_distance"],
             }

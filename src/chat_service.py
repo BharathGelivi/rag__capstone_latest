@@ -186,6 +186,25 @@ def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
         with GPU_LOCK:
             verifier = load_verifier()
             verification = verifier.verify_all(claim_set, trace.trace_id, retrieved_chunks)
+            from src.evidence_debugger import sentence_for_claim
+            chunks_by_id = {c.chunk_id: c for c in retrieved_chunks}
+            offsets = {c.candidate_id: {"character_start": c.character_start, "character_end": c.character_end,
+                                      "claim_text": c.claim_text} for c in claim_set.candidate_claims}
+            citation_checks = {}
+            for result in verification.results:
+                ids = {cid for sentence in sentence_for_claim(trace.generated_answer, offsets[result.claim_id], chunks_by_id)
+                       for cid in sentence["citations"]}
+                citation_checks[result.claim_id] = []
+                for cid in sorted(ids):
+                    if cid not in chunks_by_id:
+                        check = {"chunk_id": cid, "status": "MISSING_EVIDENCE", "reason": "Citation was not in the captured prompt evidence."}
+                    else:
+                        try:
+                            check = verifier.check_cited_chunk(result.claim_text, chunks_by_id[cid])
+                        except Exception:
+                            logger.exception("Citation check failed for %s", cid)
+                            check = {"chunk_id": cid, "status": "NOT_VERIFIABLE", "reason": "Local citation check was unavailable."}
+                    citation_checks[result.claim_id].append(check)
         return {
             "claim_ids": claim_ids,
             "claim_count": claim_set.total_candidates,
@@ -195,6 +214,9 @@ def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
                     {
                         "claim_id": vr.claim_id,
                         "claim_text": vr.claim_text,
+                        "character_start": offsets[vr.claim_id]["character_start"],
+                        "character_end": offsets[vr.claim_id]["character_end"],
+                        "citation_checks": citation_checks[vr.claim_id],
                         "status": getattr(vr.verification_status, "value", str(vr.verification_status)),
                         "reason": vr.verification_reason,
                         "confidence": vr.confidence,
@@ -242,7 +264,7 @@ def memory_evidence_chunks(entries: List[Any]) -> List[Any]:
     return out
 
 
-def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> None:
+def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> bool:
     """Write claim results back into the saved trace JSON.
 
     The trace file is saved before decomposition runs, so verification only
@@ -253,7 +275,7 @@ def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> None:
     on demand later via the metric panel.
     """
     if "verification" not in outcome and "error" not in outcome:
-        return
+        return False
     try:
         with open(trace_path, "r", encoding="utf-8") as f:
             trace_json = json.load(f)
@@ -267,8 +289,10 @@ def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> None:
             trace_json.setdefault("diagnostics", {})["claim_error"] = outcome["error"]
         with open(trace_path, "w", encoding="utf-8") as f:
             json.dump(trace_json, f, indent=2)
+        return True
     except Exception:
         logger.exception("Diagnostic persistence failed for %s", trace_path)
+        return False
 
 
 def run_chat_turn(
@@ -432,6 +456,8 @@ def _run_chat_turn(
                 retrieval_metadata={
                     "arm": arm,
                     "combined_corpora": ["statutes", "judgments"],
+                    "candidate_chunks": res_stat.retrieval_metadata.get("candidate_chunks", []) + res_judg.retrieval_metadata.get("candidate_chunks", []),
+                    "candidate_capture_scope": "Both corpus retrieval calls, before final merging and truncation.",
                 },
             )
         elif arm == "C_hybrid_rerank":

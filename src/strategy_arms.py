@@ -150,4 +150,13 @@ def execute_arm(arm: str, question_text: str, registry, retriever, graph, llm, t
         chunks += materialise(new, registry)
         graph_added += len(new)
 
-    return chunks[:top_n] if top_n is not None else chunks, result.retrieval_metadata, graph_added
+    metadata = dict(result.retrieval_metadata)
+    if "candidate_chunks" in metadata:
+        from dataclasses import asdict
+        candidates = list(metadata["candidate_chunks"])
+        if config.get("contradiction"):
+            candidates.extend(adverse.retrieval_metadata.get("candidate_chunks", []))
+        known_candidates = {c["chunk_id"] for c in candidates}
+        candidates.extend(asdict(c) for c in chunks if c.chunk_id not in known_candidates)
+        metadata["candidate_chunks"] = candidates
+    return chunks[:top_n] if top_n is not None else chunks, metadata, graph_added
