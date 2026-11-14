@@ -1,0 +1,51 @@
+name: RAG regression cases
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'configs/**'
+      - 'eval/regression_cases/**'
+      - 'scripts/run_regression_cases.py'
+      - 'tests/test_regression_cases.py'
+      - 'requirements.txt'
+      - '.github/workflows/rag-regressions.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Validate case schema and assertion engine
+        run: |
+          python -m pip install 'pydantic>=2' pytest
+          python -m scripts.run_regression_cases --validate
+          python -m pytest tests/test_regression_cases.py -q
+      - name: Check live evaluation credentials
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          if [ -z "$NVIDIA_API_KEY" ]; then
+            echo '::error::Set the NVIDIA_API_KEY repository secret for live generation checks. Fork PRs do not receive secrets; no live quality pass is claimed.'
+            exit 1
+          fi
+      - name: Install evaluation runtime
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements.txt
+      - name: Regenerate answers and enforce expectations
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: python -m scripts.run_regression_cases --mode generate --output .cache/regression-results.json
+      - name: Upload assertion report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-regression-results
+          path: .cache/regression-results.json
+          if-no-files-found: ignore

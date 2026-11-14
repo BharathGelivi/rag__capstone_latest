@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import AnswerTools from "./AnswerTools";
 import {
   createSession,
   getConfig,
@@ -713,6 +714,7 @@ function ActionBar({
       <button className="retry-btn" onClick={() => copy(content, "answer")}>
         {copied === "answer" ? "✓ Copied" : "📋 Copy answer"}
       </button>
+      <AnswerTools key={traceId ?? "pending"} traceId={traceId} busy={busy} />
       {traceId && (
         <button
           className="retry-btn"

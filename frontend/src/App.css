@@ -1449,3 +1449,10 @@ body {
 .replay-evidence { padding: 12px 0; border-bottom: 1px solid var(--color-divider); }
 .trace-replay table { table-layout: fixed; overflow-wrap: anywhere; }
 @media (max-width: 800px) { .replay-columns, .replay-controls { grid-template-columns: 1fr; } }
+.regression-form, .regression-suite { width: 100%; display: grid; gap: 12px; }
+.regression-form label, .regression-suite label { display: grid; gap: 6px; margin: 10px 0; }
+.regression-form input, .regression-form textarea, .regression-form select, .regression-suite select { width: 100%; padding: 8px; background: var(--color-surface); color: inherit; border: 1px solid var(--color-divider); font: inherit; }
+.regression-form fieldset, .regression-suite fieldset { border: 0; padding: 0; min-width: 0; }
+.regression-suite .replay-check { display: flex; align-items: center; gap: 8px; }
+.answer-tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.answer-evidence-panel, .regression-save:has(.regression-form) { flex-basis: 100%; min-width: 0; }

@@ -64,6 +64,7 @@ class TestUIEndToEnd(unittest.TestCase):
         elif path == "/ui/sessions": body = SESSIONS
         elif path.endswith("/messages"): body = []
         elif path == "/ui/memory": body = {"memories":[], "searched":False}
+        elif path == "/ui/regression-cases": body = []
         elif path == "/ui/graph": body = {"nodes":[{"id":"a", "type":"document", "label":"A", "degree":1},
                                                        {"id":"b", "type":"chunk", "label":"B", "degree":1}],
                                          "edges":[{"source":"a", "target":"b", "kind":"contains"}], "truncated":False}
@@ -171,3 +172,42 @@ class TestUIEndToEnd(unittest.TestCase):
         self.assertIn("Changed answer", self.page.get_by_label("Replay comparison").inner_text())
         self.assertIn("Original answer", self.page.get_by_label("Replay comparison").inner_text())
         self.assertEqual(requests, [{"mode": "frozen", "verify_claims": False, "system_prompt": "New instructions"}])
+
+    def test_answer_can_be_saved_with_engineer_expectations(self):
+        self.page.unroute("http://127.0.0.1:8010/**")
+        saved = []
+        def routes(route):
+            path = route.request.url.split("8010")[-1]
+            if path == "/ui/trace/fixture/regression-cases":
+                saved.append(route.request.post_data_json)
+                route.fulfill(json={"case_id": "case1", "path": "eval/regression_cases/case1.json", "baseline": {"passed": False}})
+            elif path == "/ui/trace/fixture":
+                route.fulfill(json={"trace_id": "fixture", "question": "Fixture question", "retrieved_chunk_references": []})
+            else: self.fixture(route)
+        self.page.route("http://127.0.0.1:8010/**", routes)
+        self.open_chat(); self.send()
+        self.page.get_by_role("button", name="Save as test case", exact=True).click()
+        self.page.get_by_label("Case name", exact=True).fill("Missing fact regression")
+        self.page.get_by_label("Required facts", exact=True).fill("Required fact")
+        self.page.get_by_label("Forbidden claims", exact=True).fill("Forbidden claim")
+        self.page.get_by_label("Expected evidence IDs", exact=True).fill("c1")
+        self.page.get_by_role("button", name="Save regression case", exact=True).click()
+        self.page.get_by_text("Saved to eval/regression_cases/case1.json", exact=True).wait_for()
+        self.assertEqual(saved[0]["expectations"]["required_facts"], ["Required fact"])
+        self.assertEqual(saved[0]["expectations"]["expected_evidence"], ["c1"])
+
+    def test_regression_suite_displays_failed_snapshot_assertions(self):
+        self.page.unroute("http://127.0.0.1:8010/**")
+        def routes(route):
+            path = route.request.url.split("8010")[-1]
+            if path == "/ui/regression-cases": route.fulfill(json=[{"case_id": "one", "name": "Required fact", "source_trace_id": "fixture", "expectations": {}}])
+            elif path == "/ui/regression-cases/run": route.fulfill(json={"mode": "snapshot", "passed": False, "cases": [{"case_id": "one", "name": "Required fact", "passed": False, "checks": [{"kind": "required_fact", "assertion": "Missing", "status": "failed"}]}]})
+            elif path == "/ui/traces": route.fulfill(json=[])
+            else: self.fixture(route)
+        self.page.route("http://127.0.0.1:8010/**", routes)
+        self.page.goto("http://127.0.0.1:5173")
+        self.page.get_by_role("button", name="Debug", exact=True).click()
+        self.page.get_by_label("Evaluation mode", exact=True).select_option("snapshot")
+        self.page.get_by_role("button", name="Run selected cases (1)", exact=True).click()
+        self.page.get_by_text("0/1 cases passed.", exact=True).wait_for()
+        self.assertIn("Missing", self.page.get_by_label("Regression results").inner_text())

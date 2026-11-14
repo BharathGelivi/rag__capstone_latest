@@ -1,5 +1,51 @@
 # X-RAG Diagnostic Framework
 
+## Save failures as regression cases
+
+Every saved answer has a **Save as test case** action.
+Specify expected passage IDs, required facts, forbidden claims, and whether an
+answer must refuse, may refuse, or must answer. Cases are written to
+`eval/regression_cases/<id>.json`; saving a failing case does not turn it into
+a passing baseline. Review and commit the case file to include it in PR checks.
+The export includes the original answer and captured document passages, but
+excludes recalled memory and conversation history.
+For a context-dependent follow-up question, edit `snapshot.question` in the
+case file into a standalone question before committing it.
+
+**Debug → Regression cases** runs selected cases in three modes:
+
+- **Regenerate:** current generation code and prompt, using captured document
+  evidence. This isolates generation regressions without needing the corpus DB.
+- **Retrieve:** current corpus retrieval plus generation. Requires the corpus
+  index on the machine; expected IDs can require review after re-ingestion.
+- **Snapshot:** checks the saved answer only, without regenerating it. This is
+  fixture validation, not a check of current generation quality.
+
+Literal fact matching normalizes case and whitespace, then checks phrases;
+it includes quoted and negated occurrences. Optional local NLI checks semantic
+support in the answer. Unavailable judgments fail the gate; ambiguous forbidden
+claims are reported as uncertain and also fail. Refusal detection is a heuristic.
+When refusal is allowed or required and detected, required facts are marked
+not applicable; forbidden claims and expected evidence are still checked.
+
+```powershell
+.\venv\Scripts\python.exe -m scripts.run_regression_cases --validate
+.\venv\Scripts\python.exe -m scripts.run_regression_cases --mode generate
+.\venv\Scripts\python.exe -m scripts.run_regression_cases --mode retrieve
+```
+
+The runner exits nonzero on failed assertions, provider errors or unavailable
+judgments and writes `.cache/regression-results.json`. The bundled case uses
+a fictional document, not a real legal rule.
+
+`.github/workflows/rag-regressions.yml` validates the assertion engine and
+regenerates cases on relevant pull requests, uploading a JSON report. Set the
+repository's **NVIDIA_API_KEY** Actions secret before enabling live checks.
+Fork PRs do not receive secrets, so their live evaluation cannot report a pass.
+The workflow uses `pull_request`, not privileged `pull_request_target`.
+Its quality-gate pattern follows the [Promptfoo CI reference](https://www.promptfoo.dev/docs/integrations/ci-cd/),
+using this project's runner rather than adding Promptfoo as a dependency.
+
 ## Replay and compare a saved trace
 
 Open **Debug → Replay a trace**. Select a recent trace or paste any saved

@@ -139,7 +139,7 @@ def _claim_changes(original, replay):
             if before.get(key, {}).get("status") != after.get(key, {}).get("status")]
 
 
-def replay_trace(source: RAGTrace, options: ReplayOptions):
+def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=None):
     started = time.perf_counter()
     source = deepcopy(source)
     messages = captured_messages(source)
@@ -221,6 +221,8 @@ def replay_trace(source: RAGTrace, options: ReplayOptions):
     if (source.diagnostics or {}).get("memory_ids") and not memory_evidence:
         warnings.append("Original memory remains in the captured prompt, but legacy memory evidence is unavailable for verification.")
     trace.diagnostics["memory_evidence"] = memory_evidence
+    if regression_case is not None:
+        trace.diagnostics["regression_case"] = deepcopy(regression_case)
     trace.diagnostics["replay"] = {
         "source_trace_id": source.trace_id, "mode": options.mode,
         "source_sha256": hashlib.sha256(source.to_json().encode()).hexdigest(),

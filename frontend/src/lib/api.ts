@@ -234,6 +234,29 @@ export interface ClaimVerification {
   verified_by: "nli" | "llm";
 }
 
+export interface CaseExpectations {
+  expected_evidence: string[]; required_facts: string[]; forbidden_claims: string[];
+  refusal: "required" | "allowed" | "forbidden"; fact_match: "text" | "nli";
+}
+export interface CaseResult {
+  case_id: string; name: string; passed: boolean;
+  change?: "fixed" | "regressed" | "unchanged" | "unavailable";
+  answer?: string; evidence_ids?: string[];
+  checks: Array<{kind: string; assertion?: string; status: string; detail?: string}>;
+}
+export interface SavedCase {case_id: string; name: string; source_trace_id: string; expectations: CaseExpectations}
+export function saveRegressionCase(traceId: string, name: string, expectations: CaseExpectations): Promise<{case_id: string; path: string; baseline: CaseResult}> {
+  return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/regression-cases`, {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({name, expectations}),
+  });
+}
+export function getRegressionCases(signal?: AbortSignal): Promise<SavedCase[]> {
+  return replayResponse("/ui/regression-cases", {signal});
+}
+export function runRegressionCases(caseIds: string[], mode: string): Promise<{mode: string; passed: boolean; cases: CaseResult[]}> {
+  return replayResponse("/ui/regression-cases/run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({mode, case_ids: caseIds})});
+}
+
 export interface TraceData {
   trace_id: string;
   question: string;

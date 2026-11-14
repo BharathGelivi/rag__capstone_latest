@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "case_id": "example-penalty",
+  "name": "Example: quote a fictional document accurately",
+  "source_trace_id": "synthetic-example",
+  "created_at": "2026-11-15T00:00:00Z",
+  "expectations": {
+    "expected_evidence": ["fixture-penalty"],
+    "required_facts": ["FIFTY_UNITS"],
+    "forbidden_claims": ["imprisonment"],
+    "refusal": "forbidden",
+    "fact_match": "text"
+  },
+  "snapshot": {
+    "trace_id": "synthetic-example", "trace_version": "1.0", "pipeline_version": "1.0",
+    "framework_version": "1.0", "timestamp": "2026-11-15T00:00:00Z",
+    "question": "Quote the exact penalty phrase for late filing in this fictional test document.",
+    "generated_answer": "FIFTY_UNITS [Chunk-ID: fixture-penalty]",
+    "prompt_snapshot": "", "prompt_length": 0,
+    "retrieved_chunk_references": [{"chunk_id": "fixture-penalty", "text": "Fictional Example Act, Section 999: The penalty for late filing is FIFTY_UNITS.", "rank": 1, "source_file": "fictional-example.txt", "page_number": "1", "similarity_score": 1.0}],
+    "configuration_snapshot": {"corpus": "statutes", "arm": "C_hybrid_rerank"},
+    "execution_statistics": {}, "pipeline_stage_status": {}, "diagnostics": {}
+  }
+}

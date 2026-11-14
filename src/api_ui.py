@@ -29,6 +29,7 @@ from src.device import describe_device
 from src.memory_graph import build_memory_graph_data
 from src.trace_metrics import compute_framework_panel
 from src.trace_replay import ReplayOptions, captured_messages, editable_prompt, load_trace, replay_trace, trace_choices
+from src.regression_cases import Expectations, capture_case, evaluate_case, load_cases, run_case, save_case
 from ui.components.graph import build_graph_data, build_legal_graph_data
 
 app = FastAPI(title="X-RAG UI backend")
@@ -310,6 +311,46 @@ def trace_metrics(trace_id: str):
 @app.get("/ui/traces")
 def saved_traces(limit: int = Query(50, ge=1, le=100)):
     return trace_choices(limit)
+
+
+class SaveRegressionRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    expectations: Expectations
+
+
+@app.post("/ui/trace/{trace_id}/regression-cases")
+def save_regression_case(trace_id: str, request: SaveRegressionRequest):
+    try:
+        case = capture_case(load_trace(trace_id), request.name, request.expectations)
+        directory = os.path.join(PROJECT_ROOT, "eval", "regression_cases")
+        save_case(case, directory)
+        return {"case_id": case.case_id, "path": f"eval/regression_cases/{case.case_id}.json",
+                "baseline": evaluate_case(case, case.snapshot)}
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "Trace not found") from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/ui/regression-cases")
+def regression_case_list():
+    return [{"case_id": c.case_id, "name": c.name, "source_trace_id": c.source_trace_id,
+             "expectations": c.expectations.model_dump()} for c in
+            load_cases(os.path.join(PROJECT_ROOT, "eval", "regression_cases"))]
+
+
+class RunRegressionRequest(BaseModel):
+    mode: str = Field(pattern=r"^(generate|retrieve|snapshot)$", default="generate")
+    case_ids: List[str] = Field(min_length=1, max_length=20)
+
+
+@app.post("/ui/regression-cases/run")
+def run_regression_suite(request: RunRegressionRequest):
+    cases = {c.case_id: c for c in load_cases(os.path.join(PROJECT_ROOT, "eval", "regression_cases"))}
+    if any(cid not in cases for cid in request.case_ids):
+        raise HTTPException(404, "Regression case not found")
+    results = [run_case(cases[cid], request.mode) for cid in dict.fromkeys(request.case_ids)]
+    return {"mode": request.mode, "passed": all(r["passed"] for r in results), "cases": results}
 
 
 @app.get("/ui/trace/{trace_id}/replay")
