@@ -18,6 +18,11 @@ scratch/
 
 # Docs (internal, not for public repo)
 docs/
+!docs/
+docs/*
+!docs/SEMANTIC_INDEX.md
+!docs/semantic_index.json
+!docs/CODEX_AUDIT.md
 
 # Artifacts - only diagnostic_reports, benchmark_comparison, reports are public
 artifacts/*
@@ -28,3 +33,15 @@ artifacts/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Local build products, source snapshots, and credentials
+.archify/
+.codecharta/
+node_modules/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+*.tsbuildinfo
+.env.*
+!.env.example

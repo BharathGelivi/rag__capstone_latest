@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/..")
@@ -24,7 +24,9 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src import chat_service
+from src.device import describe_device
 from src.memory_graph import build_memory_graph_data
+from src.trace_metrics import compute_framework_panel
 from ui.components.graph import build_graph_data, build_legal_graph_data
 
 app = FastAPI(title="X-RAG UI backend")
@@ -56,11 +58,14 @@ class SessionCreateRequest(BaseModel):
 
 @app.get("/ui/config")
 def get_config():
-    from experiments.exp06_strategy_ablation import ARMS
+    from src.strategy_arms import ARMS
 
     return {
         "arms": list(ARMS.keys()),
         "corpora": chat_service.CORPUS_OPTIONS,
+        # Actual device string (was previously hardcoded in the UI as
+        # "RTX 4060" on every machine).
+        "device": describe_device(),
     }
 
 
@@ -205,6 +210,12 @@ def list_memory(search: Optional[str] = None, session_id: Optional[str] = None, 
     }
 
 
+@app.get("/ui/memory/health")
+def memory_health():
+    """Return memory persistence health without mutating the store."""
+    return chat_service.get_memory_manager().health()
+
+
 @app.get("/ui/trace/latest")
 def latest_trace():
     trace = _read_latest_trace_file()
@@ -243,6 +254,122 @@ def get_trace(trace_id: str):
             ref.setdefault("text", "")
 
     return trace
+
+
+@app.get("/ui/trace/{trace_id}/metrics")
+def trace_metrics(trace_id: str):
+    """On-demand framework comparison panel for one saved turn.
+
+    Computes the 13-metric panel (RAGAS-/RAGChecker-/ARES-style families,
+    each with per-metric provenance) for the saved trace, running claim
+    decomposition + NLI verification on demand if the turn wasn't produced
+    with deep analysis. Results are cached per trace id -- each call after
+    the first is free.
+    """
+    panel = compute_framework_panel(trace_id)
+    if panel is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    return panel
+
+
+@app.get("/ui/reports")
+def list_diagnostic_reports(limit: int = 50):
+    """List generated HTML diagnostic reports for the report browser."""
+    report_dir = os.path.join(PROJECT_ROOT, "artifacts", "diagnostic_reports")
+    if not os.path.isdir(report_dir):
+        return {"reports": []}
+    paths = sorted(glob.glob(os.path.join(report_dir, "*.html")),
+                   key=os.path.getmtime, reverse=True)[:max(1, min(limit, 200))]
+    return {"reports": [{
+        "name": os.path.basename(path),
+        "trace_id": os.path.splitext(os.path.basename(path))[0],
+        "size_bytes": os.path.getsize(path),
+        "modified_at": os.path.getmtime(path),
+        "url": f"/ui/reports/{os.path.basename(path)}",
+    } for path in paths]}
+
+
+@app.get("/ui/reports/{name}")
+def download_diagnostic_report(name: str):
+    """Download one report while rejecting traversal and non-HTML files."""
+    report_dir = os.path.abspath(os.path.join(PROJECT_ROOT, "artifacts", "diagnostic_reports"))
+    candidate = os.path.abspath(os.path.join(report_dir, name))
+    if os.path.dirname(candidate) != report_dir or not candidate.endswith(".html") or not os.path.isfile(candidate):
+        raise HTTPException(status_code=404, detail="Diagnostic report not found")
+    return FileResponse(candidate, media_type="text/html", content_disposition_type="inline")
+
+
+@app.get("/ui/experiments")
+def list_experiment_runs(source: str = "active"):
+    """Return ordered experiment status and the latest reproducibility envelope."""
+    base_dir = _experiment_directory(source)
+    if not os.path.isdir(base_dir):
+        return {"run": None, "experiments": []}
+    try:
+        from experiments import run_all
+        experiments = run_all.load_experiments()
+        statuses = [run_all.experiment_status(experiment, base_dir) for experiment in experiments]
+        manifest = run_all.load_manifest(base_dir)
+        for status in statuses:
+            saved = manifest.get("experiments", {}).get(status["key"], {})
+            if saved.get("last_error"):
+                status["status"] = "failed"
+                status["last_error"] = saved["last_error"]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Unable to read experiment status: {exc}") from exc
+    run = None
+    manifest_path = os.path.join(base_dir, run_all.RUN_MANIFEST_NAME)
+    if os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, encoding="utf-8") as handle:
+                run = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            run = None
+    monitor = None
+    monitor_path = os.path.join(base_dir, "monitor.json")
+    if os.path.isfile(monitor_path):
+        with open(monitor_path, encoding="utf-8-sig") as handle:
+            monitor = json.load(handle)
+    return {"run": run, "experiments": statuses, "monitor": monitor}
+
+
+def _experiment_directory(source: str):
+    base_dir = os.path.join(PROJECT_ROOT, "artifacts", "experiments")
+    pointer = os.path.join(base_dir, "active_run.json")
+    if source == "active" and os.path.isfile(pointer):
+        with open(pointer, encoding="utf-8") as handle:
+            run_id = json.load(handle)["run_id"]
+        if not isinstance(run_id, str) or not run_id.startswith("run40_") or not all(c.isalnum() or c == "_" for c in run_id):
+            raise HTTPException(status_code=500, detail="Invalid active run")
+        return os.path.join(base_dir, "runs", run_id)
+    return base_dir
+
+
+@app.get("/ui/experiments/{key}")
+def experiment_detail(key: str, source: str = "active"):
+    from experiments import run_all
+    experiment = next((e for e in run_all.load_experiments() if e.key == key), None)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    directory = os.path.join(_experiment_directory(source), key)
+    summary = None
+    records = []
+    try:
+        path = os.path.join(directory, "summary.json")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                summary = json.load(handle, parse_constant=lambda value: None)
+        path = os.path.join(directory, "records.jsonl")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        records.append(json.loads(line, parse_constant=lambda value: None))
+                    if len(records) >= 100:
+                        break
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail="Experiment artifacts could not be read") from exc
+    return {"key": key, "title": experiment.title, "summary": summary, "records": records}
 
 
 def _read_latest_trace_file() -> Optional[Dict[str, Any]]:

@@ -99,10 +99,10 @@ LLM_MAX_TOKENS  = 2048
 # not going to answer.
 LLM_REQUEST_TIMEOUT = 90.0
 
-# Retries for transient failures (429 rate limits, 5xx). Applied by the client
-# with exponential backoff, so keep this small — the timeout above is per
-# attempt, and the worst case is roughly timeout x (retries + 1).
-LLM_MAX_RETRIES = 2
+# NOTE: there is deliberately no per-client retry knob here. The OpenAI-like
+# clients are built with ``max_retries=0`` so that all retry/backoff decisions
+# go through ``src/rate_limiter.py`` (which gates every attempt against the
+# shared account budget); client-side blind retries would burst past it.
 
 # NVIDIA's build.nvidia.com free tier caps requests at 40/minute per model,
 # account-wide (confirmed via NVIDIA developer forums/docs, 2026). Every call

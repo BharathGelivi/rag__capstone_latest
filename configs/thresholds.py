@@ -16,7 +16,7 @@ CORPUS_MAX_RELEVANT_DISTANCE = 0.75
 
 # Strategy for combining the top-3 scored evidence sentences into a single
 # verification decision. "top1" preserves the original single-sentence behavior.
-# "max_pool_top3" takes the max of each score type across the top-3 sentences.
+# "max_pool_top3" keeps the full triplet of the highest-entailment sentence.
 # "concat_top3" re-runs NLI once against the top-3 sentences concatenated.
 EVIDENCE_AGGREGATION_STRATEGY = "top1"
 

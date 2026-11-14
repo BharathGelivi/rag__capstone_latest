@@ -7,6 +7,7 @@ Memory retrieval augments — never replaces — document retrieval.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -53,16 +54,20 @@ class MemoryRetriever:
     def embed_model(self) -> HuggingFaceEmbedding:
         """Lazily load the embedding model, reusing the shared instance.
 
-        Memory and document retrieval are configured with the same model
-        (memory.yaml pins ``embedding_model`` to match ``EMBEDDING_MODEL_NAME``
-        precisely so their vectors are comparable). Constructing a second
-        instance therefore loaded an identical ~0.5 GB model onto the GPU for
-        no benefit, so this goes through the process-wide cache instead.
+        Memory and document retrieval must use the SAME model (their vectors
+        share one comparison space), so the name is read from
+        ``configs.models.EMBEDDING_MODEL_NAME`` unless explicitly overridden.
+        Constructing a second instance previously loaded an identical
+        ~0.5 GB model onto the GPU for no benefit, so this goes through the
+        process-wide cache instead.
         """
         if self._embed_model is None:
             from src.embedding_engine import get_shared_embed_model
 
-            self._embed_model = get_shared_embed_model(self.config.embedding_model)
+            model_name = self.config.embedding_model
+            if not model_name:
+                from configs.models import EMBEDDING_MODEL_NAME as model_name
+            self._embed_model = get_shared_embed_model(model_name)
         return self._embed_model
 
     def search_memory(
@@ -87,9 +92,7 @@ class MemoryRetriever:
             min_score = self.config.similarity_threshold
 
         # Embed the query
-        from configs.models import BGE_QUERY_INSTRUCTION
-        prefixed_query = BGE_QUERY_INSTRUCTION + query
-        query_embedding = self.embed_model.get_text_embedding(prefixed_query)
+        query_embedding = self.embed_query(query)
 
         # Search ChromaDB
         raw_results = self.store.search_by_embedding(
@@ -98,37 +101,33 @@ class MemoryRetriever:
             session_id=session_id,
         )
 
-        if not raw_results or not raw_results.get("ids") or not raw_results["ids"][0]:
+        # Parse hits directly from the query payload (documents+metadata are
+        # already in it -- re-fetching each id was an N+1 round-trip).
+        hits = self.store.entries_from_query(raw_results)
+        if not hits:
             return []
+
+        # Compute max access count for frequency normalization
+        max_access = max((int(h[0].access_count) for h in hits), default=1)
 
         # Build scored results
         scored_results: List[MemorySearchResult] = []
-        ids = raw_results["ids"][0]
-        documents = raw_results.get("documents", [[]])[0]
-        metadatas = raw_results.get("metadatas", [[]])[0]
-        distances = raw_results.get("distances", [[]])[0]
-
-        # Compute max access count for frequency normalization
-        all_access_counts = [
-            int(m.get("access_count", 0)) for m in metadatas
-        ]
-        max_access = max(all_access_counts) if all_access_counts else 1
-
-        for i, (mem_id, doc, meta, dist) in enumerate(
-            zip(ids, documents, metadatas, distances)
-        ):
-            # Parse the memory entry
-            entry = self.store.get_memory(mem_id)
-            if entry is None:
-                continue
-
+        for entry, dist in hits:
             # Compute individual scores
             # ChromaDB cosine distance: 0 = identical, 2 = opposite
             # Convert to similarity: 1 - (distance / 2)
             semantic = max(0.0, 1.0 - (dist / 2.0))
-            recency = compute_recency_score(entry.timestamp)
+            recency = compute_recency_score(
+                entry.timestamp, decay_hours=self.config.recency_half_life_hours
+            )
             frequency = compute_frequency_score(entry.access_count, max_access)
             importance = min(1.0, entry.importance_score)
+
+            # The threshold gates *semantic* similarity alone. Gating on the
+            # blended score (the old behavior) let fresh/frequent but
+            # topically unrelated memories in purely on recency+frequency.
+            if semantic < min_score:
+                continue
 
             # Multi-factor ranking
             final_score = (
@@ -138,8 +137,10 @@ class MemoryRetriever:
                 + self.config.importance_weight * importance
             )
 
-            if final_score < min_score:
-                continue
+            # A superseded/consolidated entry is kept for auditability but
+            # demoted past anything still current.
+            if entry.superseded_by:
+                final_score *= 0.35
 
             # Generate retrieval reason
             reason_parts = []
@@ -153,6 +154,8 @@ class MemoryRetriever:
                 reason_parts.append("Frequently referenced")
             if importance > 0.8:
                 reason_parts.append("High importance")
+            if entry.superseded_by:
+                reason_parts.append("Superseded by a newer entry")
             reason = "; ".join(reason_parts) if reason_parts else "Relevant memory"
 
             scored_results.append(
@@ -171,16 +174,16 @@ class MemoryRetriever:
         scored_results.sort(key=lambda r: r.final_score, reverse=True)
         results = scored_results[:top_k]
 
-        # Update access counts for retrieved memories
+        # One batched metadata-only write for access counts, not one upsert
+        # per hit (which additionally clobbered embeddings -- see
+        # MemoryStore.bump_access).
+        now_iso = datetime.now(timezone.utc).isoformat() + "Z"
+        bumped = []
         for result in results:
             result.memory.access_count += 1
-            result.memory.last_accessed = (
-                __import__("datetime").datetime.utcnow().isoformat() + "Z"
-            )
-            try:
-                self.store.update_memory(result.memory)
-            except Exception:
-                pass
+            result.memory.last_accessed = now_iso
+            bumped.append(result.memory)
+        self.store.bump_access(bumped)
 
         mem_logger.info(
             "Memory search for '%s': %d results (top score: %.3f)",
@@ -224,19 +227,34 @@ class MemoryRetriever:
 
         context_parts = []
         for i, result in enumerate(results, 1):
-            is_current = session_id and result.memory.session_id == session_id
-            header_type = "Current Session Interaction" if is_current else "Previous conversation"
+            mem = result.memory
+            if mem.kind == "summary":
+                header_type = "Earlier consolidation (summary)"
+                body = f"Summary: {mem.answer}"
+            elif mem.kind == "fact":
+                is_current = session_id and mem.session_id == session_id
+                src = "current session" if is_current else "an earlier session"
+                verified = mem.metadata.get("verified")
+                tag = "verified" if verified else ""
+                header_type = f"Remembered fact ({src}{', ' + tag if tag else ''})"
+                body = f"{mem.answer}\n(originally asked: {mem.question})"
+            else:
+                is_current = session_id and mem.session_id == session_id
+                header_type = "Current Session Interaction" if is_current else "Previous conversation"
+                body = f"Q: {mem.question}\nA: {mem.answer}"
             context_parts.append(
-                f"--- {header_type} {i} (Relevance: {result.final_score:.2f}) ---\n"
-                f"Q: {result.memory.question}\n"
-                f"A: {result.memory.answer}\n"
+                f"--- {header_type} {i} (Relevance: {result.final_score:.2f}) ---\n{body}\n"
             )
         return "\n".join(context_parts)
 
-    def embed_text(self, text: str) -> List[float]:
-        """Embed text using the configured embedding model.
-
-        Used by MemoryManager to pre-compute embeddings before saving.
-        """
+    def embed_query(self, text: str) -> List[float]:
+        """Embed a search query (with the BGE query instruction prefix, which
+        BGE is trained to see on the QUERY side only)."""
         from configs.models import BGE_QUERY_INSTRUCTION
         return self.embed_model.get_text_embedding(BGE_QUERY_INSTRUCTION + text)
+
+    def embed_text(self, text: str) -> List[float]:
+        """Embed text being STORED. Document-side: no query prefix -- the
+        previous shared path prefixed stored memories too, depositing them
+        slightly off the document manifold they are searched against."""
+        return self.embed_model.get_text_embedding(text)

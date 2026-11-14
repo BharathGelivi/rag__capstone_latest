@@ -80,6 +80,15 @@ class TestDiagnosticReportPresenter(unittest.TestCase):
         self.assertIn("<!DOCTYPE html>", output)
         self.assertIn("TRACE_123", output)
 
+    def test_render_html_preserves_text_without_executing_markup(self):
+        self.report.framework_metadata.trace_id = '</title><script>alert(1)</script>'
+        self.report.executive_summary.generated_answer = '<img src=x onerror=alert(1)> & evidence'
+        output = self.presenter.render_html()
+        self.assertNotIn('<script>', output)
+        self.assertNotIn('<img ', output)
+        self.assertIn('&lt;script&gt;', output)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt; &amp; evidence', output)
+
     def test_render_pdf(self):
         pdf_bytes = self.presenter.render_pdf()
         self.assertIsInstance(pdf_bytes, bytes)

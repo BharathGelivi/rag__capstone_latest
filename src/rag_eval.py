@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, asdict, field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -188,12 +189,47 @@ class GenerationMetrics:
         return asdict(self)
 
 
-#: Surface forms of a refusal, shared with experiments/exp03. A refusal must be
-#: counted as one rather than scored as a perfectly faithful answer -- see E3.
-def is_refusal(answer: str) -> bool:
-    from experiments.exp03_refusal_calibration import is_refusal as _is_refusal
+# ---------------------------------------------------------------------------
+# Answer-text signals (pure -- no model involved)
+# ---------------------------------------------------------------------------
+# Canonical home for the refusal check: evaluation code (this module, and
+# experiments/exp03) must share one definition of "this answer is a refusal",
+# or E3's claim about refusal calibration could drift from what the metric
+# panel counts. A refusal makes no verifiable claims (0/0 faithfulness) and so
+# must be counted as one rather than scored as a perfectly faithful answer.
+#
+# Deliberately broad: an under-detected refusal would be counted as a
+# substantive answer and would weaken the finding, so the detector errs toward
+# recall.
+_REFUSAL_PATTERNS = [
+    r"do(?:es)? not have enough information",
+    r"don'?t have enough information",
+    r"not enough information",
+    r"insufficient information",
+    r"unable to (?:answer|determine|find)",
+    r"cannot (?:answer|determine|be answered)",
+    r"can'?t (?:answer|determine)",
+    r"no (?:relevant )?information (?:is )?(?:available|provided|found)",
+    r"the (?:retrieved )?context does not (?:contain|provide|mention)",
+    r"i (?:do not|don'?t) know",
+]
+_REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS), re.IGNORECASE)
 
-    return _is_refusal(answer)
+#: A persisted transport/API failure, not an answer. Older traces recorded the
+#: error string in ``generated_answer`` (the bug ``GenerationResult.error``
+#: exists to prevent), so these have to be excluded or they would be scored as
+#: if the model had said them.
+_GENERATION_ERROR_RE = re.compile(
+    r"^\s*(?:error generating answer|error:|\{'message':)", re.IGNORECASE
+)
+
+
+def is_refusal(answer: str) -> bool:
+    return bool(_REFUSAL_RE.search(answer or ""))
+
+
+def is_generation_error(answer: str) -> bool:
+    return bool(_GENERATION_ERROR_RE.match(answer or ""))
 
 
 def evaluate_generation(verification, citation_report, answer: str) -> GenerationMetrics:

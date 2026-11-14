@@ -200,7 +200,7 @@ class AgenticRetriever:
             document_id = row.get("document_id")
             if not document_id or self.registry is None:
                 continue
-            for record in self.registry._records.values():
+            for record in self.registry.all_records():
                 if record.metadata.get("document_id") == document_id:
                     chunk_ids.append(record.chunk_id)
                     break
@@ -428,6 +428,9 @@ def demo() -> None:
 
         def get_chunk(self, chunk_id):
             return self._records.get(chunk_id)
+
+        def all_records(self):
+            return list(self._records.values())
 
     registry = FakeRegistry([
         FakeRecord("c1", "docA", "The doctrine of promissory estoppel binds the State."),

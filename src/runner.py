@@ -12,8 +12,6 @@ from src.report import DiagnosticEvaluationReport
 from src.answer_correctness_evaluator import AnswerCorrectnessEvaluator
 from src.ragas_metrics import RagasEvaluator
 from src.generator import Generator
-from src.retriever import get_retriever
-from src.vector_store import ChromaVectorStore
 from src.chunk_registry import ChunkRegistry
 
 logger = get_logger(__name__)
@@ -34,34 +32,21 @@ class PipelineRunner:
         self.answer_correctness_evaluator = AnswerCorrectnessEvaluator(
             decomposer=self.decomposer, verifier=self.verifier
         )
-        
-        # We also need an LLM and embedding model for RAGAS metrics. We instantiate them here.
-        # RagasEvaluator will reuse them to avoid multiple loads.
+
+        # RAGAS metrics over a *trace* need an LLM client and the shared
+        # embed model -- nothing else. Previously this constructed a throwaway
+        # Generator plus a full temporary Retriever (BM25 index build +
+        # cross-encoder load) just to reach ``embed_model``, and silently
+        # disabled RAGAS metrics whenever the corpus wasn't ingested yet.
         try:
-            from configs.models import LLM_PROVIDER
-            from src.generator import Generator
-            
-            # Temporary instantiation just to fetch the current LLM/embed models from defaults
-            temp_gen = Generator()
-            llm = temp_gen.llm
-            
-            from src.vector_store import ChromaVectorStore
-            from src.chunk_registry import ChunkRegistry
-            from src.retriever import get_retriever
-            
-            # The embed_model is usually in Retriever. To keep it simple, we can create a temporary one,
-            # or rely on the pipeline injecting it. Since Runner doesn't have it, let's create a temp Retriever.
-            registry_path = "artifacts/chunk_registry.json"
-            if os.path.exists(registry_path):
-                cr = ChunkRegistry.load_from_json(registry_path)
-                vs = ChromaVectorStore()
-                vs.initialize_collection()
-                temp_retriever = get_retriever(vs, cr)
-                embed_model = temp_retriever.embed_model
-            else:
-                embed_model = None
-                
-            self.ragas_evaluator = RagasEvaluator(llm=llm, embed_model=embed_model, claim_verifier=self.verifier)
+            from configs.models import EMBEDDING_MODEL_NAME
+            from src.embedding_engine import get_shared_embed_model
+
+            self.ragas_evaluator = RagasEvaluator(
+                llm=Generator().llm,
+                embed_model=get_shared_embed_model(EMBEDDING_MODEL_NAME),
+                claim_verifier=self.verifier
+            )
         except Exception as e:
             logger.warning(f"Could not initialize RagasEvaluator: {e}")
             self.ragas_evaluator = None
@@ -111,49 +96,25 @@ class PipelineRunner:
         if self.ragas_evaluator and self.ragas_evaluator.embed_model:
             logger.info("Running Native RAGAS Evaluator...")
             try:
-                retrieved_chunks = [
-                    ref for ref in trace.retrieved_chunk_references
-                ] # In a real scenario we need RetrievedChunk objects. 
-                  # Looking at src/ragas_metrics.py, it expects `chunk.chunk_text`.
-                  # We'll map them carefully.
-                from src.retriever import RetrievedChunk
-                mapped_chunks = [
-                    RetrievedChunk(
-                        chunk_id=c.chunk_id,
-                        chunk_text=c.text,
-                        rank=c.rank,
-                        dense_score=c.dense_score,
-                        sparse_score=c.sparse_score,
-                        rrf_score=c.rrf_score,
-                        parent_document_id=c.parent_document_id,
-                        chunk_index=c.chunk_index,
-                        source_file=c.source_file,
-                        page_number=c.page_number
-                    ) for c in trace.retrieved_chunk_references if hasattr(c, 'text')
-                ]
-                # Fallback if text is not in references (it usually isn't in traces directly, it's in registry)
-                if not mapped_chunks and os.path.exists("artifacts/chunk_registry.json"):
-                    cr = ChunkRegistry.load_from_json("artifacts/chunk_registry.json")
-                    for c in trace.retrieved_chunk_references:
-                        record = cr.get_record(c.chunk_id)
-                        if record:
-                            mapped_chunks.append(RetrievedChunk(
-                                chunk_id=c.chunk_id,
-                                chunk_text=record["text"],
-                                rank=c.rank,
-                                dense_score=c.dense_score,
-                                sparse_score=c.sparse_score,
-                                rrf_score=c.rrf_score,
-                                parent_document_id=c.parent_document_id,
-                                chunk_index=c.chunk_index,
-                                source_file=c.source_file,
-                                page_number=c.page_number
-                            ))
-                
+                # Traces store chunk *references* (plain dicts) without text;
+                # chunk text lives in the chunk registry. Rebuilding
+                # RetrievedChunks here used to confuse dict keys with
+                # attribute access (c.chunk_id / hasattr(c, 'text') on dicts),
+                # so it always produced an empty list and the metrics silently
+                # ended up None. ClaimVerifier.build_retrieved_chunks_from_trace
+                # is the same reconstruction claim verification already uses.
+                retrieved_chunks = []
+                registry_path = "artifacts/chunk_registry.json"
+                if os.path.exists(registry_path):
+                    registry = ChunkRegistry.load_from_json(registry_path)
+                    retrieved_chunks = ClaimVerifier.build_retrieved_chunks_from_trace(
+                        trace, registry
+                    )
+
                 ragas_metrics = self.ragas_evaluator.evaluate(
                     question=trace.question,
                     answer=trace.generated_answer,
-                    retrieved_chunks=mapped_chunks,
+                    retrieved_chunks=retrieved_chunks,
                     verification=verification,
                     reference=gold_answer
                 )

@@ -79,7 +79,7 @@ def render_dashboard():
     with col2:
         st.metric("Sessions", stats["total_sessions"])
     with col3:
-        st.metric("Short-term", stats["short_term_count"])
+        st.metric("Fact units", stats.get("fact_count", 0))
     with col4:
         st.metric("Summaries", stats["summaries_count"])
 

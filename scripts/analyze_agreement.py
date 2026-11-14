@@ -21,27 +21,16 @@ from typing import Any, Dict, List, Optional
 
 RESULTS_DIR = "artifacts/benchmark_comparison"
 
+# The statistics implementations live in src/stats.py now -- the canonical home
+# shared with experiments/common.py -- and are aliased here under their original
+# names so external imports of ``_pearson_r``/``_cohens_kappa`` keep working.
+from src.stats import pearson_r as _pearson_r
+from src.stats import cohens_kappa as _cohens_kappa
+
 
 def load_results(path: str) -> List[Dict[str, Any]]:
     with open(path, encoding="utf-8") as f:
         return json.load(f)
-
-
-def _pearson_r(xs: List[Optional[float]], ys: List[Optional[float]]) -> Optional[float]:
-    """Pure-python Pearson correlation coefficient. None if <2 paired points or zero variance in either series."""
-    pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
-    if len(pairs) < 2:
-        return None
-    xs2, ys2 = zip(*pairs)
-    n = len(xs2)
-    mean_x = sum(xs2) / n
-    mean_y = sum(ys2) / n
-    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs2, ys2))
-    var_x = sum((x - mean_x) ** 2 for x in xs2)
-    var_y = sum((y - mean_y) ** 2 for y in ys2)
-    if var_x == 0 or var_y == 0:
-        return None
-    return cov / (var_x ** 0.5 * var_y ** 0.5)
 
 
 def compute_correlations(results: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
@@ -51,20 +40,6 @@ def compute_correlations(results: List[Dict[str, Any]]) -> Dict[str, Optional[fl
         "xrag_vs_ragchecker_faithfulness": _pearson_r(xrag_scores, [r.get("ragchecker_faithfulness") for r in results]),
         "xrag_vs_ragchecker_precision": _pearson_r(xrag_scores, [r.get("ragchecker_precision") for r in results]),
     }
-
-
-def _cohens_kappa(a: List[Optional[bool]], b: List[Optional[bool]]) -> Optional[float]:
-    pairs = [(x, y) for x, y in zip(a, b) if x is not None and y is not None]
-    n = len(pairs)
-    if n == 0:
-        return None
-    po = sum(1 for x, y in pairs if x == y) / n
-    p_a_true = sum(1 for x, _ in pairs if x) / n
-    p_b_true = sum(1 for _, y in pairs if y) / n
-    pe = p_a_true * p_b_true + (1 - p_a_true) * (1 - p_b_true)
-    if pe == 1:
-        return 1.0 if po == 1 else 0.0
-    return (po - pe) / (1 - pe)
 
 
 def _confusion_matrix(a: List[Optional[bool]], b: List[Optional[bool]]) -> Dict[str, int]:

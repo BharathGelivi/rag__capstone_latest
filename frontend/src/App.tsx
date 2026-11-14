@@ -4,10 +4,12 @@ import Graph from "./components/Graph";
 import Overview from "./components/Overview";
 import Memory from "./components/Memory";
 import Debug from "./components/Debug";
-import { createSession, deleteSession, getSessions, type Session } from "./lib/api";
+import Reports from "./components/Reports";
+import Experiments from "./components/Experiments";
+import { createSession, deleteSession, getConfig, getSessions, type Session } from "./lib/api";
 import "./App.css";
 
-export type Tab = "overview" | "chat" | "graph" | "memory" | "debug";
+export type Tab = "overview" | "chat" | "graph" | "memory" | "reports" | "experiments" | "debug";
 
 export interface RuntimeSettings {
   memoryEnabled: boolean;
@@ -35,6 +37,14 @@ const NAV: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></>,
   },
   {
+    id: "reports", label: "Reports",
+    icon: <><path d="M6 3h9l3 3v15H6z" /><path d="M15 3v4h4M9 12h6M9 16h6" /></>,
+  },
+  {
+    id: "experiments", label: "Experiments",
+    icon: <><path d="M4 19h16M6 16V8M12 16V4M18 16v-5" /><circle cx="6" cy="8" r="1" /><circle cx="12" cy="4" r="1" /><circle cx="18" cy="11" r="1" /></>,
+  },
+  {
     id: "debug", label: "Debug",
     icon: <><rect x="7" y="8" width="10" height="10" rx="1" />
       <path d="M12 2v4M8 8 6 5M16 8l2-3M9 18l-2 3M15 18l2 3M4 13H2M22 13h-2" /></>,
@@ -49,6 +59,13 @@ export default function App() {
   const [settings, setSettings] = useState<RuntimeSettings>({
     memoryEnabled: true, deepAnalysis: true, autoExpandDetails: false,
   });
+  const [device, setDevice] = useState<string>("—");
+
+  useEffect(() => {
+    getConfig()
+      .then((c) => { if (c.device) setDevice(c.device); })
+      .catch(() => { /* footer shows "—" until the backend answers */ });
+  }, []);
 
   const loadSessions = async () => {
     try {
@@ -147,7 +164,7 @@ export default function App() {
         ))}
 
         <div className="sidebar-footer">
-          Device: <span>RTX 4060 · CUDA</span>
+          Device: <span>{device}</span>
         </div>
       </aside>
 
@@ -168,6 +185,8 @@ export default function App() {
         )}
         {tab === "graph" && <Graph />}
         {tab === "memory" && <Memory />}
+        {tab === "reports" && <Reports />}
+        {tab === "experiments" && <Experiments />}
         {tab === "debug" && (
           <Debug settings={settings} onSettingsChange={setSettings} lastTraceId={lastTraceId} />
         )}

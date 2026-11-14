@@ -36,6 +36,7 @@ import os
 import sys
 import time
 import traceback
+import uuid
 from typing import Any, Dict, List, Optional
 
 from experiments.common import (
@@ -52,6 +53,7 @@ logger = logging.getLogger("experiments")
 
 MANIFEST_NAME = "manifest.json"
 REPORT_NAME = "SUITE_REPORT.md"
+RUN_MANIFEST_NAME = "run_manifest.json"
 
 
 def load_experiments() -> List[Experiment]:
@@ -100,6 +102,32 @@ def save_manifest(base_dir: str, manifest: Dict[str, Any]) -> None:
         json.dump(manifest, f, indent=2)
 
 
+def save_run_manifest(base_dir: str, experiments: List[Experiment], ctx: ExperimentContext) -> str:
+    """Persist the exact run envelope beside checkpoints for reproducibility."""
+    os.makedirs(base_dir, exist_ok=True)
+    path = os.path.join(base_dir, RUN_MANIFEST_NAME)
+    payload = {
+        "run_id": f"run_{uuid.uuid4().hex[:12]}",
+        "created_at": utc_now(),
+        "mode": ctx.mode,
+        "seed": ctx.seed,
+        "limit": ctx.limit,
+        "allow_small_sample": ctx.allow_small_sample,
+        "extra": ctx.extra,
+        "experiments": [{"number": e.number, "key": e.key, "title": e.title,
+                         "claim": e.claim} for e in experiments],
+        "configuration": {
+            "models": "configs.models",
+            "pipeline": "configs.pipeline",
+            "thresholds": "configs.thresholds",
+            "arms": "src.strategy_arms.ARMS",
+        },
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, default=str)
+    return path
+
+
 def experiment_status(experiment: Experiment, base_dir: str) -> Dict[str, Any]:
     checkpoint = Checkpoint(experiment.key, base_dir=base_dir)
     state = checkpoint.load_state()
@@ -107,6 +135,7 @@ def experiment_status(experiment: Experiment, base_dir: str) -> Dict[str, Any]:
         "number": experiment.number,
         "key": experiment.key,
         "title": experiment.title,
+        "claim": experiment.claim,
         "status": state.get("status", "not_started"),
         "n_recorded": len(checkpoint.completed_ids()),
         "n_planned": state.get("n_planned"),
@@ -349,6 +378,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "Running E%s in %s mode (seed=%d).",
         ",".join(str(e.number) for e in selected), ctx.mode, ctx.seed,
     )
+    run_manifest = save_run_manifest(args.base_dir, selected, ctx)
+    logger.info("Run manifest written to %s", run_manifest)
     failures = run_suite(selected, ctx, rerun_complete=args.rerun_complete)
 
     print_status(experiments, args.base_dir)

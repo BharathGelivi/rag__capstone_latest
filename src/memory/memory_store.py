@@ -10,7 +10,6 @@ Handles both short-term (in-memory ring buffer) and long-term
 import json
 import logging
 import os
-from collections import deque
 from typing import Any, Dict, List, Optional
 
 import chromadb
@@ -51,14 +50,14 @@ class _NullEmbeddingFunction(ChromaEmbeddingFunction):
 class MemoryStore:
     """Persistent storage layer for the memory system.
 
-    Short-term memory: in-memory deque (last N interactions).
-    Long-term memory: ChromaDB collection with embeddings.
-    Session metadata: JSON files on disk.
+    Long-term memory lives in a ChromaDB collection; session metadata and
+    summaries live as JSON files on disk. (The old in-memory short-term deque
+    was never read by anything -- the chat history window does that job --
+    so it was removed rather than kept as write-only state.)
     """
 
     def __init__(self, config: Optional[MemoryConfig] = None) -> None:
         self.config = config or MemoryConfig()
-        self._short_term: deque = deque(maxlen=self.config.short_memory_size)
         self._chroma_client: Optional[chromadb.ClientAPI] = None
         self._collection: Optional[Any] = None
         self._sessions: Dict[str, SessionInfo] = {}
@@ -130,26 +129,36 @@ class MemoryStore:
         mem_logger.info("MemoryStore initialized successfully.")
 
     # ------------------------------------------------------------------
-    # Short-term memory
-    # ------------------------------------------------------------------
-
-    def add_to_short_term(self, entry: MemoryEntry) -> None:
-        """Add an entry to the short-term memory buffer."""
-        self._short_term.append(entry)
-        mem_logger.debug("Added to short-term memory: %s", entry.memory_id)
-
-    def get_short_term_memories(self) -> List[MemoryEntry]:
-        """Get all entries in the short-term memory buffer."""
-        return list(self._short_term)
-
-    def clear_short_term(self) -> None:
-        """Clear the short-term memory buffer."""
-        self._short_term.clear()
-        mem_logger.info("Short-term memory cleared.")
-
-    # ------------------------------------------------------------------
     # Long-term memory (ChromaDB)
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _entry_metadata(entry: MemoryEntry) -> Dict[str, Any]:
+        """Flat, Chroma-safe metadata record for a memory entry.
+
+        ``question``/``answer`` are stored as *fields*, not packed into the
+        document blob -- the blob previously had to be split back apart on a
+        "\nA: " literal, which silently corrupts any answer that itself
+        contains that string.
+        """
+        return {
+            "session_id": entry.session_id,
+            "timestamp": entry.timestamp,
+            "memory_type": entry.memory_type.value,
+            "kind": entry.kind,
+            "scope": entry.scope,
+            "superseded_by": entry.superseded_by or "",
+            "content_hash": entry.content_hash or "",
+            "question": entry.question,
+            "answer": entry.answer,
+            "importance_score": entry.importance_score,
+            "access_count": entry.access_count,
+            "trace_id": entry.trace_id or "",
+            "tags": json.dumps(entry.tags),
+            "chunk_ids": json.dumps(entry.retrieved_chunk_ids),
+            "claim_ids": json.dumps(entry.claim_ids),
+            "extra": json.dumps(entry.metadata),
+        }
 
     def save_memory(
         self,
@@ -169,21 +178,8 @@ class MemoryStore:
         if not self._initialized:
             self.initialize()
 
-        # Also add to short-term
-        self.add_to_short_term(entry)
-
         # Save to ChromaDB
-        metadata = {
-            "session_id": entry.session_id,
-            "timestamp": entry.timestamp,
-            "memory_type": entry.memory_type.value,
-            "importance_score": entry.importance_score,
-            "access_count": entry.access_count,
-            "trace_id": entry.trace_id or "",
-            "tags": json.dumps(entry.tags),
-            "chunk_ids": json.dumps(entry.retrieved_chunk_ids),
-            "claim_ids": json.dumps(entry.claim_ids),
-        }
+        metadata = self._entry_metadata(entry)
 
         document = f"Q: {entry.question}\nA: {entry.answer}"
 
@@ -209,6 +205,69 @@ class MemoryStore:
             raise
 
         return entry.memory_id
+
+    def bump_access(self, entries: List[MemoryEntry]) -> None:
+        """Persist updated access_count/last_accessed for recalled entries.
+
+        Uses ``collection.update`` with metadata ONLY. The old read-path bump
+        went through ``upsert(..., documents=...)`` without embeddings, which
+        makes Chroma recompute the vector with this collection's null
+        embedding function -- silently zeroing the embedding of every memory
+        the moment it was first recalled. Metadata-only update never touches
+        vectors.
+        """
+        if not entries:
+            return
+        if not self._initialized:
+            self.initialize()
+        try:
+            self._collection.update(
+                ids=[e.memory_id for e in entries],
+                metadatas=[self._entry_metadata(e) for e in entries],
+            )
+        except Exception as e:
+            logger.warning("bump_access failed for %d entries: %s", len(entries), e)
+
+    def find_by_content_hash(self, content_hash: str) -> Optional[MemoryEntry]:
+        """Exact-text dedup anchor; content_hash rides as flat metadata."""
+        if not self._initialized:
+            self.initialize()
+        if not content_hash:
+            return None
+        try:
+            results = self._collection.get(
+                where={"content_hash": content_hash},
+                include=["documents", "metadatas"],
+                limit=1,
+            )
+            if results and results["ids"]:
+                return self._chroma_result_to_entry(results, 0)
+        except Exception as e:
+            logger.warning("content_hash lookup failed: %s", e)
+        return None
+
+    def entries_from_query(self, results: Dict[str, Any]) -> List[Any]:
+        """Convert Chroma query results to ``(MemoryEntry, distance)`` pairs.
+
+        The query response *already carries* documents and metadatas per hit;
+        re-fetching each id through get_memory() (the old path) was one extra
+        Chroma round-trip per recalled memory.
+        """
+        if not results or not results.get("ids") or not results["ids"][0]:
+            return []
+        ids = results["ids"][0]
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[0.0] * len(ids)])[0]
+        out = []
+        for i in range(len(ids)):
+            sub = {"ids": [ids[i]],
+                   "documents": [documents[i] if i < len(documents) else ""],
+                   "metadatas": [metadatas[i] if i < len(metadatas) else {}]}
+            entry = self._chroma_result_to_entry(sub, 0)
+            if entry is not None:
+                out.append((entry, float(distances[i]) if i < len(distances) else 0.0))
+        return out
 
     def get_memory(self, memory_id: str) -> Optional[MemoryEntry]:
         """Retrieve a single memory entry by ID."""
@@ -241,9 +300,14 @@ class MemoryStore:
             return False
 
     def update_memory(self, entry: MemoryEntry, embedding: Optional[List[float]] = None) -> bool:
-        """Update an existing memory entry."""
+        """Update an existing memory entry's metadata.
+
+        Metadata-only: embeddings and document text are untouched (see
+        ``bump_access`` for why upsert-without-embeddings was destructive).
+        Change question/answer text via ``save_memory`` (full upsert).
+        """
         try:
-            self.save_memory(entry, embedding)
+            self.bump_access([entry])  # same metadata-only update path
             mem_logger.info("Updated memory: %s", entry.memory_id)
             return True
         except Exception:
@@ -262,6 +326,10 @@ class MemoryStore:
         if not self._initialized:
             self.initialize()
 
+        # Normalize session objects at the storage boundary; Chroma metadata
+        # filters only accept scalar values.
+        if session_id is not None and not isinstance(session_id, str):
+            session_id = getattr(session_id, "session_id", str(session_id))
         where_filter = None
         if session_id:
             where_filter = {"session_id": session_id}
@@ -358,13 +426,16 @@ class MemoryStore:
         try:
             count = self._collection.count()
             if count > 0:
-                # Delete and recreate collection
+                # Delete and recreate collection (with the same null embedding
+                # function initialize() uses -- without it, the collection
+                # silently rebinds to Chroma's default 384-dim embedder and the
+                # next startup hits a spurious "embedding function conflict").
                 self._chroma_client.delete_collection(self.config.collection_name)
                 self._collection = self._chroma_client.get_or_create_collection(
                     name=self.config.collection_name,
                     metadata={"hnsw:space": "cosine"},
+                    embedding_function=_NullEmbeddingFunction(),
                 )
-            self._short_term.clear()
             mem_logger.info("Cleared all %d memories.", count)
             return count
         except Exception as e:
@@ -380,6 +451,26 @@ class MemoryStore:
         except Exception:
             return 0
 
+    def health(self) -> Dict[str, Any]:
+        """Return cheap, read-only persistence diagnostics for the UI/API."""
+        if not self._initialized:
+            self.initialize()
+        count = self._collection.count()
+        sessions = len(self._sessions)
+        summaries = len(self._summaries)
+        entries = self.get_all_memories(limit=max(count, 1)) if count else []
+        missing_session = sum(1 for entry in entries if not entry.session_id)
+        malformed = sum(1 for entry in entries if not entry.question.strip() or not entry.answer.strip())
+        return {
+            "status": "healthy" if not missing_session and not malformed else "degraded",
+            "memory_count": count,
+            "session_count": sessions,
+            "summary_count": summaries,
+            "missing_session_count": missing_session,
+            "malformed_entry_count": malformed,
+            "embedding_model": self.config.embedding_model,
+            "collection": self.config.collection_name,
+        }
     # ------------------------------------------------------------------
     # Session management (persisted as JSON)
     # ------------------------------------------------------------------
@@ -448,10 +539,12 @@ class MemoryStore:
             doc = result["documents"][index] if result.get("documents") else ""
             meta = result["metadatas"][index] if result.get("metadatas") else {}
 
-            # Parse Q/A from document
-            question = ""
-            answer = ""
-            if doc:
+            # Q/A live as dedicated metadata fields since the structural fix;
+            # the split-on-"\nA: " blob parse below is legacy fallback for
+            # entries written before the fields existed.
+            question = meta.get("question", "")
+            answer = meta.get("answer", "")
+            if not answer and doc:
                 if "\nA: " in doc:
                     parts = doc.split("\nA: ", 1)
                     question = parts[0].replace("Q: ", "", 1)
@@ -466,12 +559,17 @@ class MemoryStore:
                 answer=answer,
                 timestamp=meta.get("timestamp", ""),
                 memory_type=MemoryType(meta.get("memory_type", "long_term")),
+                kind=meta.get("kind", "turn"),
+                scope=meta.get("scope", "chat"),
+                superseded_by=meta.get("superseded_by") or None,
+                content_hash=meta.get("content_hash") or None,
                 importance_score=float(meta.get("importance_score", 1.0)),
                 access_count=int(meta.get("access_count", 0)),
                 trace_id=meta.get("trace_id") or None,
                 tags=json.loads(meta.get("tags", "[]")),
                 retrieved_chunk_ids=json.loads(meta.get("chunk_ids", "[]")),
                 claim_ids=json.loads(meta.get("claim_ids", "[]")),
+                metadata=json.loads(meta.get("extra", "{}")),
             )
         except Exception as e:
             logger.error("Failed to parse memory from ChromaDB result: %s", e)

@@ -671,7 +671,7 @@ class TestRetrieverSeams(unittest.TestCase):
     """E2 depends on rank_candidates/rerank composing back into retrieve()."""
 
     def test_retrieve_is_rank_candidates_then_rerank_then_truncate(self):
-        from configs.pipeline import RERANKER_TOP_N, RERANK_INPUT_SIZE
+        from configs.pipeline import RERANKER_TOP_N, RERANK_INPUT_SIZE, RETRIEVAL_MODE
         from src.retriever import Retriever
 
         chunks = [
@@ -695,7 +695,7 @@ class TestRetrieverSeams(unittest.TestCase):
         ) as reranked:
             result = retriever.retrieve("q")
 
-        ranked.assert_called_once_with("q", RERANK_INPUT_SIZE)
+        ranked.assert_called_once_with("q", RERANK_INPUT_SIZE, mode=RETRIEVAL_MODE)
         reranked.assert_called_once()
         self.assertEqual(len(result.retrieved_chunks), min(RERANKER_TOP_N, 4))
         self.assertEqual(result.retrieved_chunks[0].chunk_id, "c3")
@@ -1105,9 +1105,13 @@ class TestSuiteDriver(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
         self.experiments = run_all.load_experiments()
 
-    def test_experiments_are_numbered_one_through_five(self):
-        self.assertEqual([e.number for e in self.experiments], [1, 2, 3, 4, 5])
-        self.assertEqual(len({e.key for e in self.experiments}), 5)
+    def test_experiments_are_contiguously_numbered(self):
+        # The suite must be numbered contiguously 1..N. Pinning N to 5 left
+        # these assertions failing the moment E6..E13 were added; the
+        # invariant that matters is contiguity and unique non-empty keys.
+        numbers = [e.number for e in self.experiments]
+        self.assertEqual(numbers, list(range(1, len(numbers) + 1)))
+        self.assertEqual(len({e.key for e in self.experiments}), len(numbers))
 
     def test_every_experiment_declares_a_claim(self):
         for experiment in self.experiments:
@@ -1117,12 +1121,14 @@ class TestSuiteDriver(unittest.TestCase):
     def test_from_selects_the_tail_of_the_suite(self):
         args = run_all.build_parser().parse_args(["--from", "5"])
         selected = run_all.select(self.experiments, args)
-        self.assertEqual([e.number for e in selected], [5])
+        self.assertEqual([e.number for e in selected],
+                         list(range(5, len(self.experiments) + 1)))
 
     def test_from_three_keeps_three_onwards(self):
         args = run_all.build_parser().parse_args(["--from", "3"])
         self.assertEqual(
-            [e.number for e in run_all.select(self.experiments, args)], [3, 4, 5]
+            [e.number for e in run_all.select(self.experiments, args)],
+            list(range(3, len(self.experiments) + 1)),
         )
 
     def test_only_selects_exactly_those_experiments(self):
@@ -1146,6 +1152,21 @@ class TestSuiteDriver(unittest.TestCase):
         manifest = run_all.load_manifest(self.dir)
         self.assertEqual(manifest["experiments"]["a"]["status"], "complete")
         self.assertIn("updated_at", manifest)
+
+    def test_run_manifest_captures_reproducibility_envelope(self):
+        base_dir = os.path.join(os.getcwd(), ".test_run_manifest_tmp")
+        self.addCleanup(shutil.rmtree, base_dir, ignore_errors=True)
+        path = run_all.save_run_manifest(
+            base_dir,
+            [run_all.load_experiments()[0]],
+            ExperimentContext(mode="offline", seed=17, extra={"arm": "A_vector"}),
+        )
+        with open(path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        self.assertTrue(manifest["run_id"].startswith("run_"))
+        self.assertEqual(manifest["seed"], 17)
+        self.assertEqual(manifest["experiments"][0]["key"], run_all.load_experiments()[0].key)
+        self.assertIn("models", manifest["configuration"])
 
     def test_unreadable_manifest_starts_fresh(self):
         os.makedirs(self.dir, exist_ok=True)
@@ -1239,12 +1260,17 @@ class TestSuiteDriver(unittest.TestCase):
 
 
 class TestSuiteIntegration(unittest.TestCase):
-    """Every experiment runs offline and produces a well-formed summary."""
+    """The five offline studies produce well-formed, resumable summaries.
+
+    E6 onward need real corpora/models or remote APIs and belong in live runs.
+    """
 
     @classmethod
     def setUpClass(cls):
         cls.dir = tempfile.mkdtemp()
-        cls.code = run_all.main(["--base-dir", cls.dir])
+        cls.experiments = [e for e in run_all.load_experiments() if e.number <= 5]
+        cls.args = ["--base-dir", cls.dir, "--only", "1", "2", "3", "4", "5"]
+        cls.code = run_all.main(cls.args)
 
     @classmethod
     def tearDownClass(cls):
@@ -1254,7 +1280,7 @@ class TestSuiteIntegration(unittest.TestCase):
         self.assertEqual(self.code, 0)
 
     def test_every_experiment_meets_the_fifty_example_floor(self):
-        for experiment in run_all.load_experiments():
+        for experiment in self.experiments:
             summary = Checkpoint(experiment.key, base_dir=self.dir).load_summary()
             self.assertIsNotNone(summary, f"{experiment.key} produced no summary")
             self.assertGreaterEqual(
@@ -1263,14 +1289,14 @@ class TestSuiteIntegration(unittest.TestCase):
             )
 
     def test_every_summary_carries_a_headline_and_interpretation(self):
-        for experiment in run_all.load_experiments():
+        for experiment in self.experiments:
             summary = Checkpoint(experiment.key, base_dir=self.dir).load_summary()
             self.assertIn("headline", summary, experiment.key)
             self.assertIn("claim", summary, experiment.key)
             self.assertTrue(summary.get("interpretation_notes"), experiment.key)
 
     def test_every_summary_is_json_serialisable(self):
-        for experiment in run_all.load_experiments():
+        for experiment in self.experiments:
             path = Checkpoint(experiment.key, base_dir=self.dir).summary_path
             with open(path, encoding="utf-8") as f:
                 json.load(f)
@@ -1284,12 +1310,12 @@ class TestSuiteIntegration(unittest.TestCase):
     def test_rerunning_the_suite_recomputes_nothing(self):
         before = {
             e.key: os.path.getsize(Checkpoint(e.key, base_dir=self.dir).records_path)
-            for e in run_all.load_experiments()
+            for e in self.experiments
         }
-        run_all.main(["--base-dir", self.dir])
+        run_all.main(self.args)
         after = {
             e.key: os.path.getsize(Checkpoint(e.key, base_dir=self.dir).records_path)
-            for e in run_all.load_experiments()
+            for e in self.experiments
         }
         self.assertEqual(before, after)
 
@@ -1297,7 +1323,7 @@ class TestSuiteIntegration(unittest.TestCase):
         first = os.path.getmtime(
             Checkpoint("exp01_fault_injection", base_dir=self.dir).records_path
         )
-        run_all.main(["--base-dir", self.dir, "--from", "5"])
+        run_all.main(["--base-dir", self.dir, "--only", "5"])
         self.assertEqual(
             first,
             os.path.getmtime(Checkpoint("exp01_fault_injection", base_dir=self.dir).records_path),

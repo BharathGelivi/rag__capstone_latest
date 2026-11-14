@@ -65,7 +65,7 @@ def compute_frequency_score(access_count: int, max_count: int = 100) -> float:
 
 def get_timestamp() -> str:
     """Get the current UTC timestamp in ISO format."""
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
 def ensure_directory(path: str) -> None:

@@ -139,7 +139,7 @@ def generate_embeddings(
     dimension = len(embed_model.get_text_embedding("probe"))
     logger.info("Embedding dimension: %d", dimension)
 
-    records = list(registry._records.values())
+    records = registry.all_records()
     total = len(records)
     logger.info("Processing %d chunk(s) with batch_size=%d.", total, batch_size)
 

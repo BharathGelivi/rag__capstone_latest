@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -49,6 +50,16 @@ def make_generation_result(chunk_ids=("c1", "c2")):
 
 
 class TestRAGTrace(unittest.TestCase):
+    def test_saved_deep_analysis_can_be_loaded_without_mutating_payload(self):
+        trace = RAGTraceBuilder.build(make_retrieval_result(), make_generation_result(), 1.0)
+        payload = json.loads(trace.to_json())
+        payload["claim_verification"] = {"claim_count": 0, "results": []}
+        payload["claim_error"] = "previous attempt failed"
+        reloaded = RAGTrace.from_json(payload)
+        self.assertEqual(reloaded.diagnostics["claim_verification"], payload["claim_verification"])
+        self.assertEqual(reloaded.diagnostics["claim_error"], payload["claim_error"])
+        self.assertIn("claim_verification", payload)
+
     def test_build_trace_from_results(self):
         retrieval_result = make_retrieval_result()
         generation_result = make_generation_result()

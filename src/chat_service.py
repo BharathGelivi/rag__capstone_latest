@@ -12,10 +12,12 @@ RAGTrace build, claim decomposition, NLI verification) are unchanged.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Dict, Generator as TypingGenerator, List, Optional
@@ -24,7 +26,10 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/..")
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from src.device import describe_device
 from src.memory.memory_manager import MemoryManager
+
+logger = logging.getLogger(__name__)
 
 #: Serializes access to GPU-resident models (reranker, NLI verifier) across
 #: concurrent request threads -- a single-worker uvicorn process still runs
@@ -139,6 +144,105 @@ def get_memory_manager() -> MemoryManager:
     return mm
 
 
+def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
+    """Claim decomposition + NLI verification for a trace (steps 5-6).
+
+    Returns ``{"claim_ids": [...], "claim_count": int, "verification": {...}}``
+    on success or ``{"error": msg}`` on failure. Factored out of
+    ``_run_chat_turn`` so the on-demand metric panel
+    (``src/trace_metrics.py``, served by ``/ui/trace/{id}/metrics``) runs the
+    *same* analysis instead of forking it.
+    """
+    try:
+        decomposer = load_decomposer()
+        claim_set = decomposer.decompose(trace)
+        claim_ids = [c.candidate_id for c in claim_set.candidate_claims]
+        if not claim_set.candidate_claims:
+            return {"claim_ids": [], "claim_count": 0,
+                    "verification": {"claim_count": 0, "results": []}}
+        with GPU_LOCK:
+            verifier = load_verifier()
+            verification = verifier.verify_all(claim_set, trace.trace_id, retrieved_chunks)
+        return {
+            "claim_ids": claim_ids,
+            "claim_count": claim_set.total_candidates,
+            "verification": {
+                "claim_count": claim_set.total_candidates,
+                "results": [
+                    {
+                        "claim_id": vr.claim_id,
+                        "claim_text": vr.claim_text,
+                        "status": getattr(vr.verification_status, "value", str(vr.verification_status)),
+                        "reason": vr.verification_reason,
+                        "confidence": vr.confidence,
+                        "entailment_score": vr.entailment_score,
+                        "contradiction_score": vr.contradiction_score,
+                        "neutral_score": vr.neutral_score,
+                        "best_chunk_id": vr.best_chunk_id,
+                        "best_chunk_rank": vr.best_chunk_rank,
+                        "evidence_text": vr.evidence_text,
+                        "verified_by": vr.verified_by,
+                    }
+                    for vr in verification.results
+                ],
+            },
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def memory_evidence_chunks(entries: List[Any]) -> List[Any]:
+    """Render recalled memory entries as pseudo-chunks for the NLI verifier.
+
+    Claim verification otherwise only scores *document* chunks -- a claim the
+    model drew from recalled memory (the prompt tells it to cite [Memory])
+    would come back UNSUPPORTED and misdiagnose as hallucination. These items
+    are marked by the ``memory:`` chunk_id prefix so reports can separate
+    memory-grounded from document-grounded claims.
+    """
+    from src.retriever import RetrievedChunk
+
+    out = []
+    for e in entries:
+        text = e.answer if getattr(e, "kind", "turn") == "fact" else f"Q: {e.question}\nA: {e.answer}"
+        out.append(RetrievedChunk(
+            chunk_id=f"memory:{e.memory_id}",
+            similarity_score=0.0,
+            rank=0,
+            page_number="",
+            source_file="memory",
+            chunk_index=0,
+            chunk_text=(text or "")[:1500],
+            parent_document_id=e.session_id or "",
+        ))
+    return out
+
+
+def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> None:
+    """Write claim results back into the saved trace JSON.
+
+    The trace file is saved before decomposition runs, so verification only
+    ever existed on the live SSE ``strategy`` event without this -- it
+    vanished on page reload (same class of bug the chunk-text backfill in
+    ``/ui/trace`` fixed for retrieval, just for claims instead). Persisting
+    here makes deep analysis durable whether it ran live during the turn or
+    on demand later via the metric panel.
+    """
+    if "verification" not in outcome and "error" not in outcome:
+        return
+    try:
+        with open(trace_path, "r", encoding="utf-8") as f:
+            trace_json = json.load(f)
+        if "verification" in outcome:
+            trace_json["claim_verification"] = outcome["verification"]
+        if "error" in outcome:
+            trace_json["claim_error"] = outcome["error"]
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump(trace_json, f, indent=2)
+    except Exception:
+        pass
+
+
 def run_chat_turn(
     question: str,
     session_id: str,
@@ -159,8 +263,11 @@ def run_chat_turn(
     try:
         yield from _run_chat_turn(
             question, session_id, arm, corpus, chat_history, memory_enabled, deep_analysis)
-    except Exception as exc:
-        yield {"event": "error", "message": f"{type(exc).__name__}: {exc}"}
+    except Exception:
+        reference_id = str(uuid.uuid4())
+        logger.exception("Chat turn failed [ref=%s]", reference_id)
+        yield {"event": "error", "message": f"The chat request failed. Please retry. Reference: {reference_id}",
+               "reference_id": reference_id}
 
 
 def _run_chat_turn(
@@ -200,13 +307,20 @@ def _run_chat_turn(
     # Step 1: memory retrieval
     memory_context = ""
     recalled_memories: list = []
+    memory_results: list = []
     t_mem = time.time()
+    memory_time = 0.0
     if memory_enabled:
         try:
-            memory_results = mm.search_memory(question, top_k=3, session_id=session_id)
+            # chat_recall applies the cross_session policy in one place --
+            # with it on (default), recall spans all sessions and session_id
+            # is only used to label what came from the current one.
+            memory_results = mm.chat_recall(question, session_id=session_id, top_k=3)
             memory_context = mm.format_memory_context(memory_results, session_id=session_id)
             recalled_memories = [
                 {
+                    "memory_id": r.memory.memory_id,
+                    "kind": r.memory.kind,
                     "question": r.memory.question,
                     "answer": r.memory.answer[:300],
                     "session_id": r.memory.session_id,
@@ -221,10 +335,11 @@ def _run_chat_turn(
             ]
         except Exception:
             memory_context = ""
+        memory_time = time.time() - t_mem
     yield {
         "event": "memory",
         "recalled": recalled_memories,
-        "memory_time": round(time.time() - t_mem, 3),
+        "memory_time": round(memory_time, 3),
     }
 
     yield {"event": "stage", "stage": "condense", "label": "Condensing query…"}
@@ -249,7 +364,7 @@ def _run_chat_turn(
 
     # Step 2: retrieval via execute_arm -- identical to the ablation experiment
     t1 = time.time()
-    from experiments.exp06_strategy_ablation import ARMS, execute_arm
+    from src.strategy_arms import ARMS, execute_arm
     from src.retriever import RetrievalResult
 
     # Every branch here does GPU cross-encoder reranking (directly, or inside
@@ -366,6 +481,13 @@ def _run_chat_turn(
         retrieval_result, generation_result,
         retrieval_result.retrieval_time + generation_result.generation_time,
     )
+    # Memory provenance travels with the trace -- without it the turn is not
+    # reproducible (the answer depended on state only the memory DB held).
+    trace.diagnostics = {
+        "retrieval_metadata": retrieval_result.retrieval_metadata,
+        "memory_ids": [r.memory.memory_id for r in memory_results],
+        "memory_kinds": [r.memory.kind for r in memory_results],
+    }
     trace_path = RAGTraceBuilder.save_to_json(trace)
 
     strategy_event = {
@@ -376,60 +498,45 @@ def _run_chat_turn(
     }
 
     claim_count = 0
+    claim_ids: List[str] = []
     if deep_analysis:
         # Steps 5-6: claim decomposition + NLI verification, opt-in -- same
         # 30-115s/claim cost on CPU as the Streamlit path, so gated identically.
-        try:
-            decomposer = load_decomposer()
-            claim_set = decomposer.decompose(trace)
-            claim_count = claim_set.total_candidates
-            if not claim_set.candidate_claims:
-                strategy_event["verification"] = {"claim_count": 0, "results": []}
-            else:
-                with GPU_LOCK:
-                    verifier = load_verifier()
-                    verification = verifier.verify_all(
-                        claim_set, trace.trace_id, retrieval_result.retrieved_chunks)
-                strategy_event["verification"] = {
-                    "claim_count": claim_count,
-                    "results": [
-                        {
-                            "claim_id": vr.claim_id,
-                            "claim_text": vr.claim_text,
-                            "status": getattr(vr.verification_status, "value", str(vr.verification_status)),
-                            "reason": vr.verification_reason,
-                            "confidence": vr.confidence,
-                            "entailment_score": vr.entailment_score,
-                            "contradiction_score": vr.contradiction_score,
-                            "neutral_score": vr.neutral_score,
-                            "best_chunk_id": vr.best_chunk_id,
-                            "best_chunk_rank": vr.best_chunk_rank,
-                            "evidence_text": vr.evidence_text,
-                            "verified_by": vr.verified_by,
-                        }
-                        for vr in verification.results
-                    ],
-                }
-        except Exception as exc:
-            strategy_event["claim_error"] = str(exc)
+        # Recalled memories join the evidence pool (marked memory:<id>) so a
+        # claim grounded in memory isn't misdiagnosed as unsupported.
+        evidence = retrieval_result.retrieved_chunks + memory_evidence_chunks(
+            [r.memory for r in memory_results])
+        outcome = deep_analyze(trace, evidence)
+        if "error" in outcome:
+            strategy_event["claim_error"] = outcome["error"]
+        else:
+            claim_ids = outcome["claim_ids"]
+            claim_count = outcome["claim_count"]
+            strategy_event["verification"] = outcome["verification"]
 
-        # The trace file was already saved above, before claim decomposition
-        # ran -- without this, verification results only ever existed on the
-        # live SSE `strategy` event and vanished the moment the page was
-        # reloaded or the session revisited (same class of bug the chunk-text
-        # backfill in /ui/trace fixed for retrieval, just for claims instead).
-        if "verification" in strategy_event or "claim_error" in strategy_event:
-            try:
-                with open(trace_path, "r", encoding="utf-8") as f:
-                    trace_json = json.load(f)
-                if "verification" in strategy_event:
-                    trace_json["claim_verification"] = strategy_event["verification"]
-                if "claim_error" in strategy_event:
-                    trace_json["claim_error"] = strategy_event["claim_error"]
-                with open(trace_path, "w", encoding="utf-8") as f:
-                    json.dump(trace_json, f, indent=2)
-            except Exception:
-                pass
+            # Persist the *verified* claims as compact, recallable fact units.
+            # This is what makes later turns able to recall "what the answer
+            # established" instead of re-embedding a 2k-token turn blob.
+            verified_facts = [
+                (r["claim_text"], r["claim_id"])
+                for r in outcome["verification"]["results"]
+                if r["status"] in ("SUPPORTED", "PARTIALLY_SUPPORTED")
+            ]
+            if memory_enabled and verified_facts:
+                try:
+                    with GPU_LOCK:
+                        mm.save_verified_facts(
+                            question=question,
+                            facts=[t for t, _ in verified_facts],
+                            session_id=session_id,
+                            trace_id=trace.trace_id,
+                            claim_ids=[c for _, c in verified_facts],
+                            verifier=load_verifier(),
+                        )
+                except Exception as exc:
+                    logger.warning("Fact persistence failed (turn already saved): %s", exc)
+
+        persist_deep_analysis(trace_path, outcome)
 
     yield strategy_event
 
@@ -443,11 +550,18 @@ def _run_chat_turn(
         return float(np.dot(a_arr, b_arr) / (na * nb)) if (na > 0 and nb > 0) else 0.0
 
     # 1. Answer Relevancy
+    # The embedding model lives on the Retriever, not on the vector store --
+    # the previous hasattr check against retriever.vector_store.embedding_model
+    # never matched anything, which is why this metric silently always returned
+    # the 0.85 fallback. The question side gets the same BGE query prefix the
+    # retriever applies, so both embeddings are in the model's query space.
     answer_relevancy = 0.85
     try:
-        if hasattr(retriever, "vector_store") and hasattr(retriever.vector_store, "embedding_model"):
-            q_emb = retriever.vector_store.embedding_model.get_text_embedding(question)
-            a_emb = retriever.vector_store.embedding_model.get_text_embedding(generation_result.generated_answer[:600])
+        from configs.models import BGE_QUERY_INSTRUCTION
+
+        if retriever is not None:
+            q_emb = retriever.embed_model.get_text_embedding(BGE_QUERY_INSTRUCTION + question)
+            a_emb = retriever.embed_model.get_text_embedding(generation_result.generated_answer[:600])
             answer_relevancy = round(max(0.0, min(1.0, cosine_sim(q_emb, a_emb))), 4)
     except Exception:
         pass
@@ -482,8 +596,9 @@ def _run_chat_turn(
     groundedness = round(grounded_count / len(sentences), 4) if sentences else 0.90
     faithfulness = round((groundedness * 0.65) + (citation_precision * 0.35), 4)
 
-    import torch
-    device_name = "NVIDIA RTX 4060 GPU (CUDA)" if torch.cuda.is_available() else "CPU"
+    # Query the actual device rather than hardcoding a specific GPU model --
+    # the old string claimed a 4060 on every machine that had any CUDA device.
+    device_name = describe_device()
 
     yield {
         "event": "evaluation",
@@ -499,7 +614,6 @@ def _run_chat_turn(
 
     # Step 7: save to memory -- unconditional, same as the fast path in
     # ui/app.py, so a turn is remembered whether or not deep analysis ran.
-    claim_ids: List[str] = []
     if memory_enabled:
         try:
             mm.save_interaction(
@@ -520,5 +634,5 @@ def _run_chat_turn(
         "total_time": round(time.time() - t0, 3),
         "generation_time": round(generation_time, 3),
         "retrieval_time": round(retrieval_time, 3),
-        "memory_time": round(time.time() - t_mem if not memory_enabled else 0, 3),
+        "memory_time": round(memory_time if memory_enabled else 0.0, 3),
     }

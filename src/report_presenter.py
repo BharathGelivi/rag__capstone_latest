@@ -1,4 +1,5 @@
 import json
+from html import escape
 from typing import List, Dict, Any, Optional
 from src.report import DiagnosticEvaluationReport
 
@@ -299,13 +300,13 @@ artifacts/reports/{t_id}.json
 
     def render_html(self) -> str:
         # Convert markdown to simple semantic HTML manually to avoid dependencies
-        md = self.render_markdown()
+        md = escape(self.render_markdown())
         
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Diagnostic Report - {self.report.framework_metadata.trace_id}</title>
+<title>Diagnostic Report - {escape(self.report.framework_metadata.trace_id)}</title>
 <style>
     body {{ font-family: sans-serif; line-height: 1.6; max-width: 900px; margin: 0 auto; padding: 20px; }}
     h1, h2 {{ color: #333; }}

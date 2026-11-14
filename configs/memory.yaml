@@ -1,23 +1,45 @@
 # Memory System Configuration for X-RAG
 # =========================================
+# All keys are optional; missing keys fall back to MemoryConfig defaults in
+# src/memory/memory_models.py.
 
-# Short-term memory: number of recent interactions kept in-memory
-short_memory_size: 10
-
-# Minimum semantic similarity score for memory retrieval (0.0 - 1.0)
+# Minimum SEMANTIC similarity for a memory to be recalled at all (0.0 - 1.0).
+# This gates the semantic score alone, then the weighted blend ranks survivors.
 similarity_threshold: 0.4
 
 # Weight of memory context relative to document context (0.0 - 1.0)
 memory_weight: 0.3
 
-# Number of interactions before auto-summarization triggers
+# Number of active (non-superseded) turn entries in a session before
+# auto-summarization consolidates the oldest half into a summary entry.
 summarization_threshold: 20
 
-# Embedding model for memory vectors (must match the retrieval embedding model)
-embedding_model: "BAAI/bge-base-en-v1.5"
+# Embedding model: INTENTENTIONALLY UNSET -- memory follows
+# configs/models.py EMBEDDING_MODEL_NAME so both vector spaces always match
+# (a pinned copy here drifted riskily). Override only if you know why.
+# embedding_model: "BAAI/bge-base-en-v1.5"
 
 # Directory for persistent memory storage (ChromaDB + JSON metadata)
 persistence_directory: "./db/memory"
+
+# Recall across all sessions by default (README advertises this). Set false
+# to scope chat recall to the active session only.
+cross_session: true
+
+# Recency half-life in hours for memory ranking (168h = one week; 24h was too
+# aggressive for legal research that spans days).
+recency_half_life_hours: 168.0
+
+# Near-duplicate turns (cosine similarity >= this over the shared embedding
+# model) merge instead of duplicating.
+dedup_similarity: 0.92
+
+# Persist NLI-verified claims as compact fact units (the recall-precise layer).
+fact_memory: true
+
+# Near-identical facts (>= this similarity) are supersede-checked with NLI;
+# a contradicting new fact retires the old one.
+supersede_similarity: 0.95
 
 # Automatically save every interaction to long-term memory
 auto_save: true

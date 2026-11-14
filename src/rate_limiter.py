@@ -37,20 +37,29 @@ MAX_ATTEMPTS = 4
 
 
 def acquire() -> None:
-    """Block until issuing another call would stay within the rolling window."""
+    """Block until issuing another call would stay within the rolling window.
+
+    Sleeping happens *outside* the lock: holding it through the wait would
+    serialize unrelated threads behind one caller's rate-limit cooldown, which
+    matters because this limiter is shared process-wide (the UI's threadpool
+    runs turn handlers concurrently). The timestamp bookkeeping stays inside
+    the lock, and the window decision is re-checked after waking, so a thread
+    that slept never claims a slot that a waker stole from under it.
+    """
     limit = _models.NVIDIA_RPM_LIMIT
-    with _lock:
-        now = time.monotonic()
-        while _call_times and now - _call_times[0] >= WINDOW_SECONDS:
-            _call_times.popleft()
-        if len(_call_times) >= limit:
-            sleep_for = WINDOW_SECONDS - (now - _call_times[0])
-            if sleep_for > 0:
-                time.sleep(sleep_for)
+    while True:
+        with _lock:
             now = time.monotonic()
             while _call_times and now - _call_times[0] >= WINDOW_SECONDS:
                 _call_times.popleft()
-        _call_times.append(now)
+            if len(_call_times) < limit:
+                _call_times.append(now)
+                return
+            sleep_for = WINDOW_SECONDS - (now - _call_times[0])
+        if sleep_for <= 0:
+            # Oldest entry already aged out between checks -- just re-check.
+            continue
+        time.sleep(sleep_for)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:

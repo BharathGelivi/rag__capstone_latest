@@ -461,9 +461,10 @@ class ClaimVerifier:
         }
 
         max_pool = {
-            "entailment": max(s.entailment_score for s in top_3),
-            "contradiction": max(s.contradiction_score for s in top_3),
-            "neutral": max(s.neutral_score for s in top_3),
+            # Match production: keep the best sentence's complete distribution.
+            "entailment": best_sentence.entailment_score,
+            "contradiction": best_sentence.contradiction_score,
+            "neutral": best_sentence.neutral_score,
         }
         status, _ = self._determine_status_and_reason(max_pool["entailment"], max_pool["contradiction"], max_pool["neutral"])
         results["max_pool_top3"] = {"status": status.value, **max_pool}

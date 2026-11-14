@@ -64,7 +64,10 @@ class RootCauseSection:
     primary_cause: str
     secondary_effects: List[str] = field(default_factory=list)
     reasoning_chain: List[str] = field(default_factory=list)
-    diagnosis_confidence: str = "HIGH"
+    # Mean evidentiary confidence of the PSM states (0.0..1.0 float), assigned
+    # from RootCauseAnalysis.confidence -- the former ``str = "HIGH"`` type was
+    # never what this field actually carried (a float every time).
+    diagnosis_confidence: float = 0.0
 
 @dataclass
 class CorrectiveActionSection:

@@ -125,6 +125,14 @@ class ChunkRegistry:
         """Alias for ``get_chunk()`` — preferred name used by RAGAS evaluator."""
         return self._records.get(chunk_id)
 
+    def all_records(self) -> List[ChunkRecord]:
+        """Every registered chunk record, in registration order.
+
+        Public view of the primary store so consumers (the retriever's BM25
+        indexer, the embedding engine) don't reach into ``_records``.
+        """
+        return list(self._records.values())
+
     def get_document_chunks(self, document_id: str) -> List[ChunkRecord]:
         """Return all chunks belonging to *document_id*.
 

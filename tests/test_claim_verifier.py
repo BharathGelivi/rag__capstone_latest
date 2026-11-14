@@ -178,6 +178,21 @@ class TestClaimVerifier(unittest.TestCase):
         if os.path.exists(filepath):
             os.remove(filepath)
 
+    def test_ablation_max_pool_matches_production_probability_distribution(self):
+        sentences = [
+            EvidenceSentence('s1', 'ch1', 1, 'Neutral.', 0.3, 0.1, 0.6),
+            EvidenceSentence('s2', 'ch2', 2, 'Contradiction.', 0.1, 0.9, 0.0),
+        ]
+        with patch.object(self.verifier, '_score_text_sources_against_claim', return_value=sentences):
+            with patch.object(self.verifier, 'run_nli', return_value={'entailment': 0.3, 'contradiction': 0.1, 'neutral': 0.6}):
+                outcome = self.verifier.compute_all_aggregation_strategies('claim', [])
+        self.verifier.aggregation_strategy = 'max_pool_top3'
+        expected = self.verifier._aggregate_top3(sentences, 'claim')
+        scores = outcome['max_pool_top3']
+        for name, value in expected.items():
+            self.assertEqual(scores[name], value)
+        self.assertAlmostEqual(sum(scores[k] for k in expected), 1.0)
+
 
 def _make_nli_mock(entailment, neutral, contradiction):
     """A single-answer NLI mock: every pair scores the same triplet, so

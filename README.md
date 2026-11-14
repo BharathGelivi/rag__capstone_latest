@@ -1,5 +1,165 @@
 # X-RAG Diagnostic Framework
 
+## Start the dashboard, Archify and CodeCharta together
+
+From the repository root in **PowerShell**, after the Python environment and
+`.env` in [Quick Start](#quick-start) are ready, install the frontend dependencies
+once with `npm --prefix frontend install`. Node.js must be on PATH. This local
+checkout also needs the installed CodeCharta skill and its global visualization
+package (the helper expects `$env:USERPROFILE\.codex\skills\codecharta`).
+
+```powershell
+# Launch three hidden background processes; terminal can be closed afterward.
+.\scripts\local_services.ps1 start
+
+# Check HTTP readiness (the API can take longer to import its dependencies).
+.\scripts\local_services.ps1 status
+
+# Stop only the processes recorded by this helper.
+.\scripts\local_services.ps1 stop
+```
+
+| Service | Open | Purpose |
+|---|---|---|
+| React dashboard | <http://127.0.0.1:5173> | Chat, graphs, experiments and reports |
+| Dashboard API | <http://127.0.0.1:8010/docs> | FastAPI transport and interactive API docs |
+| CodeCharta explorer | <http://127.0.0.1:8085/explorer.html> | Source map, metrics and component notes |
+
+Logs and owned process IDs are in `.cache/local-services/`. An occupied port is
+left alone; `stop` only stops a matching recorded PID and process start time.
+Processes keep running after the assistant finishes and after closing the
+terminal. Keep Windows awake: computer sleep or shutdown interrupts serving;
+the helper does not automatically restart services after reboot. Starting these
+services does not start an experiment run or rebuild the document index.
+
+### Open the two saved Archify workflows
+
+These are interactive **architecture diagrams** showing two application flows.
+They can be opened as standalone HTML without running any server:
+
+- [Live chat and evidence](.archify/architecture-saved-dashboard-20261007-145812/chat-pipeline.html)
+- [Saved experiments and trace evaluation](.archify/architecture-saved-dashboard-20261007-145812/saved-results.html)
+
+With the viewer running, open them at:
+
+- <http://127.0.0.1:8085/.archify/architecture-saved-dashboard-20261007-145812/chat-pipeline.html>
+- <http://127.0.0.1:8085/.archify/architecture-saved-dashboard-20261007-145812/saved-results.html>
+
+Both saved diagrams have passing validation, delivery, provenance and automated
+browser-check receipts beside their HTML files, dated 7 October 2026. They
+describe the saved source snapshot; these receipts do not validate later code
+changes. This startup command serves the existing artifacts.
+
+### How the whole system fits together
+
+**Flow 1: live chat and evidence.** `run_pipeline.py` prepares documents,
+chunks and embeddings separately, writing the chunk registry and Chroma index.
+The React dashboard sends a question and retrieval strategy to FastAPI on
+8010. `src/chat_service.py` orchestrates retrieval (vector/BM25/hybrid,
+reranking, or the optional iterative/graph strategies), recalls conversation
+memory when enabled, and calls NVIDIA inference to generate an answer.
+FastAPI streams the answer back using SSE. The service saves a RAG trace
+containing the question, answer and evidence. Optional deep analysis decomposes
+the answer into claims and checks them against evidence with local NLI;
+decomposition and ambiguous judging can call remote inference. Enabled memory
+stores interactions and supported facts for later turns.
+
+```mermaid
+flowchart LR
+    Prep[Corpus preparation] --> Index[Chroma and chunk registry]
+    UI[React dashboard] --> API[FastAPI: HTTP and SSE]
+    API --> Chat[Chat orchestration]
+    Chat --> Index
+    Chat <--> Memory[Conversation memory: optional]
+    Chat --> NVIDIA[NVIDIA inference]
+    Chat --> Trace[Saved RAG traces]
+    Chat -->|Deep analysis enabled| Verify[Claim decomposition and local NLI]
+    Verify -->|Decompose or judge| NVIDIA
+    Verify --> Trace
+```
+
+**Flow 2: saved experiments and trace evaluation.** Experiments and Reports
+use the same dashboard and API to browse files already under `artifacts/`.
+The active experiment run is selected through `artifacts/experiments/active_run.json`;
+legacy results use the base experiments directory. These endpoints read
+manifests, summaries, JSONL records and diagnostic HTML; browsing does not
+execute the experiment suite. The separate **Compare frameworks** action
+evaluates a saved chat trace: it reuses persisted claim verification or computes
+and persists missing verification, then computes a metric panel with local and
+remote judges as needed. Panel results are cached in the API process and that
+cache is lost on restart. The dashboard's RAGAS/RAGChecker/ARES-style scores
+follow this project's definitions; the optional baseline benchmark commands
+elsewhere in this README run the upstream frameworks separately.
+
+```mermaid
+flowchart LR
+    UI[Experiments and Reports dashboard] --> API[Dashboard API]
+    API --> Experiments[Saved experiment JSON and JSONL]
+    API --> Reports[Saved diagnostic HTML]
+    API -->|Compare frameworks request| Metrics[Trace metric panel]
+    Metrics <--> Traces[Saved chat traces from flow 1]
+    Metrics --> Judges[Evaluation judges: local and remote]
+    Metrics --> Cache[In-process panel cache]
+```
+
+The saved trace connects the two flows: chat creates evidence that diagnostics
+can inspect later. Archify explains component responsibilities and data paths.
+CodeCharta maps the implementation: buildings represent files, footprint is
+real lines of code, and height/color reflect logic complexity. The saved map
+measured 163 source files; its dependency edges cover frontend imports, not
+Python runtime calls. Complexity helps choose what to inspect; it is not a bug
+count. CodeCharta and Archify are local viewers, not services required by chat.
+
+### Run or refresh the viewers manually
+
+To serve the existing CodeCharta explorer and both Archify diagrams alone:
+
+```powershell
+node "$env:USERPROFILE\.codex\skills\codecharta\scripts\serve.mjs" . 8085
+```
+
+To regenerate CodeCharta metrics and embedded source snapshots after code changes
+(requires the CodeCharta analysis tools, Java and Python script dependencies):
+
+```powershell
+python "$env:USERPROFILE\.codex\skills\codecharta\scripts\analyze.py" .
+```
+
+Archify has no required server. To regenerate a diagram from its saved JSON,
+use the installed skill CLI; `finalize` runs its automated quality gates. For
+changed application behavior, first revise the specification and source evidence
+to match the code rather than only rerendering an old snapshot.
+
+```powershell
+$archifyCli = "$env:USERPROFILE\.codex\skills\archify\bin\archify.mjs"
+$diagramDir = '.archify/architecture-saved-dashboard-20261007-145812'
+node $archifyCli finalize architecture "$diagramDir/chat-pipeline.json" "$diagramDir/chat-pipeline.html" --repo-root . --quality showcase --json
+node $archifyCli finalize architecture "$diagramDir/saved-results.json" "$diagramDir/saved-results.html" --repo-root . --quality showcase --json
+```
+
+Generated explorers and diagrams include source snapshots; keep the viewer local.
+
+## Semantic repository index
+
+Rebuild the searchable source map with `python scripts/build_semantic_index.py`.
+See [index design and diagnostic flow](docs/SEMANTIC_INDEX.md) and
+[generated metadata](docs/semantic_index.json) for symbols, dependencies, tests,
+configuration, artifact references and API endpoints. No model loading or extra
+dependencies are required.
+
+The offline Python suite can be run with `XRAG_E2E_SKIP=1` when the two UI
+servers are stopped (PowerShell: `$env:XRAG_E2E_SKIP='1'` before unittest).
+The offline experiment integration test runs E1–E5; live studies E6 onward
+remain separate benchmark runs. Chat transport checks use Node 24:
+`node --test --test-isolation=none frontend/tests/api.test.mjs`.
+For repeatable timing smoke checks, run `python -m scripts.benchmark_diagnostics`;
+add `--local-model` to time cached NLI initialization and one-pair inference.
+These synthetic checks do not measure remote LLM or live end-to-end latency.
+
+Interrupted chat streams and HTTP failures now show a retryable error.
+Unexpected backend chat exceptions return a reference ID; details stay in
+developer logs. HTML diagnostic reports preserve trace text as escaped content.
+
 ## Run the React UI
 
 Two servers, both from the repo root. Requires the Python env set up (see

@@ -3,10 +3,35 @@ export const API_BASE = "http://127.0.0.1:8010";
 export interface Config {
   arms: string[];
   corpora: string[];
+  device?: string;
 }
 
 export async function getConfig(): Promise<Config> {
   const r = await fetch(`${API_BASE}/ui/config`);
+  return r.json();
+}
+
+export interface ExperimentStatus {
+  number: number;
+  key: string;
+  title: string;
+  claim: string;
+  status: string;
+  n_recorded?: number;
+  n_planned?: number;
+  mode?: string;
+  summary?: Record<string, unknown>;
+}
+
+export interface ExperimentRuns {
+  run: Record<string, unknown> | null;
+  experiments: ExperimentStatus[];
+  monitor?: {status: string; elapsed_seconds?: number; next_check_hours?: number};
+}
+
+export async function getExperimentRuns(source = "active"): Promise<ExperimentRuns> {
+  const r = await fetch(`${API_BASE}/ui/experiments?source=${source}`);
+  if (!r.ok) throw new Error(`Experiment status failed (HTTP ${r.status})`);
   return r.json();
 }
 
@@ -37,25 +62,35 @@ export async function* streamChat(req: ChatRequest, signal?: AbortSignal): Async
     body: JSON.stringify(req),
     signal,
   });
-  if (!res.body) return;
+  if (!res.ok) throw new Error(`Chat request failed (HTTP ${res.status}). Please retry.`);
+  if (!res.body) throw new Error('The chat response was empty. Please retry.');
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let terminal = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    let sep;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      if (frame.startsWith("data: ")) {
-        yield JSON.parse(frame.slice(6)) as ChatEvent;
+      let sep;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        if (frame.startsWith("data: ")) {
+          const event = JSON.parse(frame.slice(6)) as ChatEvent;
+          terminal ||= event.event === 'done' || event.event === 'error';
+          yield event;
+        }
       }
     }
+    if (!terminal) throw new Error('The chat connection ended before completion. Please retry.');
+  } finally {
+    await reader.cancel().catch(() => {});
+    reader.releaseLock();
   }
 }
 
@@ -130,6 +165,9 @@ export interface MemoryEntry {
   retrieved_chunk_ids: string[];
   claim_ids: string[];
   tags: string[];
+  kind?: string;                 // "turn" | "fact" | "summary"
+  scope?: string;                // "chat" | "eval"
+  superseded_by?: string | null; // id of the entry that replaced this one
 }
 
 export interface ScoredMemory {
@@ -150,6 +188,23 @@ export async function getMemory(
   if (opts.sessionId) params.set("session_id", opts.sessionId);
   if (opts.limit) params.set("limit", String(opts.limit));
   const r = await fetch(`${API_BASE}/ui/memory?${params}`);
+  return r.json();
+}
+
+export interface MemoryHealth {
+  status: "healthy" | "degraded";
+  memory_count: number;
+  session_count: number;
+  summary_count: number;
+  missing_session_count: number;
+  malformed_entry_count: number;
+  embedding_model?: string | null;
+  collection: string;
+}
+
+export async function getMemoryHealth(): Promise<MemoryHealth> {
+  const r = await fetch(`${API_BASE}/ui/memory/health`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
@@ -201,5 +256,58 @@ export async function getTrace(traceId: string): Promise<TraceData | null> {
   const r = await fetch(`${API_BASE}/ui/trace/${traceId}`);
   if (!r.ok) return null;
   return r.json();
+}
+
+/* ─── Per-trace framework comparison (RAGAS / RAGChecker / ARES style) ─── */
+
+export interface FrameworkMetric {
+  key: string;
+  label: string;
+  value: number | null;   // null = not computed (typically: needs a reference answer)
+  definition: string;
+  judge: string;
+  requires?: string | null;
+}
+
+export interface FrameworkFamily {
+  family: string;         // "RAGAS" | "RAGChecker" | "ARES" | "this project"
+  metrics: FrameworkMetric[];
+}
+
+export interface FrameworkPanel {
+  trace_id: string;
+  note: string;           // honesty label: these are X-RAG judges, *style* metrics
+  families: FrameworkFamily[];
+  verification: {
+    total: number; supported: number; partially_supported: number;
+    contradicted: number; unsupported: number; not_verifiable: number;
+    average_entailment: number;
+  } | null;
+  computed_claims: boolean;  // deep analysis was run on demand for this call
+  cached: boolean;
+}
+
+export async function getFrameworkPanel(traceId: string): Promise<FrameworkPanel> {
+  const r = await fetch(`${API_BASE}/ui/trace/${traceId}/metrics`);
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).detail ?? msg; } catch { /* keep status */ }
+    throw new Error(msg);
+  }
+  return r.json();
+}
+
+export interface DiagnosticReport {
+  name: string;
+  trace_id: string;
+  size_bytes: number;
+  modified_at: number;
+  url: string;
+}
+
+export async function getDiagnosticReports(): Promise<DiagnosticReport[]> {
+  const r = await fetch(`${API_BASE}/ui/reports`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()).reports;
 }
 

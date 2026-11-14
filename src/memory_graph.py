@@ -1,32 +1,29 @@
-"""
-Interactive graph over claude-mem's own memory (observations/sessions/concepts).
+"""Interactive graph over the framework's own memory store.
 
-Reads directly from claude-mem's SQLite DB rather than its HTTP worker: the
-worker's port is dynamic (written to ~/.claude-mem/worker.pid) and the worker
-may not be running, whereas the DB file is always there once claude-mem has
-run once. Opened read-only via a `file:` URI so a live worker holding the
-file does not block us and we never risk writing to it.
-
-Same ``{"nodes": [...], "edges": [...], "truncated": bool}`` shape as
-``ui/components/graph.py``'s ``build_graph_data()``, so both graphs share one
-renderer on the frontend.
+Used to read from ``~/.claude-mem/`` -- the developer's personal AI memory
+tool, which made the shipped "Memory graph" view silently empty on every
+other machine. Now it graphs what this project actually stores: sessions,
+memory entries (turn/fact/summary), and the traces they produced, in the
+same ``{"nodes": [...], "edges": [...], "truncated": bool}`` shape as
+``ui/components/graph.py``'s ``build_graph_data()``, so both graphs share
+one renderer on the frontend.
 """
 
 from __future__ import annotations
 
-import json
-import os
-import sqlite3
+import logging
 from typing import Any, Dict, List, Optional
 
-DB_PATH = os.path.expanduser("~/.claude-mem/claude-mem.db")
+logger = logging.getLogger(__name__)
 
-#: type -> display color, mirrors the legend convention in ui/components/graph.py
+#: kind -> display color. Session pink / memory blue / fact green / summary
+#: amber / trace dark -- the same legend conventions as the RAG graph.
 NODE_TYPES: Dict[str, Dict[str, str]] = {
     "session": {"label": "Session", "color": "#ec4899"},
-    "observation": {"label": "Observation", "color": "#3b82f6"},
-    "concept": {"label": "Concept", "color": "#10b981"},
-    "file": {"label": "File", "color": "#f59e0b"},
+    "turn": {"label": "Memory (turn)", "color": "#3b82f6"},
+    "fact": {"label": "Memory (fact)", "color": "#10a37f"},
+    "summary": {"label": "Summary", "color": "#f59e0b"},
+    "trace": {"label": "Trace", "color": "#0d0d0d"},
 }
 
 
@@ -35,34 +32,36 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _connect() -> Optional[sqlite3.Connection]:
-    if not os.path.exists(DB_PATH):
-        return None
-    uri = f"file:{DB_PATH.replace(os.sep, '/')}?mode=ro"
-    return sqlite3.connect(uri, uri=True)
-
-
 def build_memory_graph_data(
     project: Optional[str] = None,
     max_observations: int = 150,
 ) -> Dict[str, Any]:
-    """Assemble nodes/edges from claude-mem observations, sessions, concepts, files.
+    """Assemble nodes/edges from the project's own memory store.
 
     Args:
-        project:          Restrict to one project (matches the `project` column).
-        max_observations: Cap, most-recent-first -- an unbounded pull renders as
-                           a hairball the same way an uncapped chunk graph would.
+        project:          Kept for API compatibility; the project's store is
+                          single-tenant, so this parameter only filters turns
+                          whose session title matches it when given.
+        max_observations: Memory-node cap, most-recent-first -- an uncapped
+                          pull renders as a hairball.
     """
-    conn = _connect()
-    if conn is None:
-        return {"nodes": [], "edges": [], "truncated": False}
-
     nodes: Dict[str, Dict[str, Any]] = {}
     edges: List[Dict[str, Any]] = []
+    truncated = False
 
     def add_node(node_id: str, node_type: str, label: str, **extra: Any) -> None:
-        if node_id not in nodes:
-            nodes[node_id] = {"id": node_id, "type": node_type, "label": label, "degree": 0, **extra}
+        if node_id in nodes:
+            return
+        info = NODE_TYPES.get(node_type, {"label": node_type, "color": "#9ca3af"})
+        nodes[node_id] = {
+            "id": node_id,
+            "type": node_type,
+            "label": label,
+            "color": info["color"],
+            "type_label": info["label"],
+            "degree": 0,
+            **extra,
+        }
 
     def add_edge(source: str, target: str, kind: str) -> None:
         if source in nodes and target in nodes:
@@ -71,84 +70,53 @@ def build_memory_graph_data(
             nodes[target]["degree"] += 1
 
     try:
-        conn.row_factory = sqlite3.Row
-        query = (
-            "SELECT id, memory_session_id, project, type, title, subtitle, "
-            "concepts, files_read, files_modified, created_at "
-            "FROM observations "
-        )
-        params: List[Any] = []
-        if project:
-            query += "WHERE project = ? "
-            params.append(project)
-        query += "ORDER BY created_at_epoch DESC LIMIT ?"
-        params.append(max_observations)
-        rows = conn.execute(query, params).fetchall()
+        # Late import to keep this module importable without a framework stack
+        from src import chat_service
+        mm = chat_service.get_memory_manager()
+    except Exception as exc:
+        logger.warning("memory graph: store unavailable: %s", exc)
+        return {"nodes": [], "edges": [], "truncated": False}
 
-        session_rows = {
-            r["memory_session_id"]: r
-            for r in conn.execute(
-                "SELECT memory_session_id, custom_title, user_prompt FROM sdk_sessions"
-            ).fetchall()
-        }
-    finally:
-        conn.close()
+    try:
+        sessions = {s.session_id: s for s in mm.list_sessions()}
+        for s in sessions.values():
+            add_node(s.session_id, "session", _truncate(s.title or s.session_id, 48))
 
-    truncated = len(rows) >= max_observations
+        memories = mm.store.get_all_memories(limit=max_observations * 2)
+        memories.sort(key=lambda m: m.timestamp or "", reverse=True)
+        if len(memories) > max_observations:
+            memories = memories[:max_observations]
+            truncated = True
 
-    for row in reversed(rows):  # oldest first, so layout reads chronologically
-        obs_id = f"obs::{row['id']}"
-        obs_type = row["type"] or "observation"
-        add_node(
-            obs_id, "observation", _truncate(row["title"] or f"#{row['id']}", 30),
-            detail=f"{row['title'] or ''}\n\n{row['subtitle'] or ''}",
-            meta=f"{obs_type} · {row['created_at']}",
-            obs_type=obs_type,
-        )
+        for mem in memories:
+            kind = mem.kind if mem.kind in NODE_TYPES else "turn"
+            label = _truncate(mem.question if kind == "turn" else mem.answer, 64)
+            add_node(
+                mem.memory_id, kind, label,
+                detail=f"{mem.question} — {mem.answer}" if kind != "turn"
+                else f"Q: {mem.question}\nA: {mem.answer}",
+                meta=f"{mem.session_id} · {mem.timestamp}",
+            )
+            if mem.session_id in nodes:
+                add_edge(mem.session_id, mem.memory_id, "contains")
 
-        sid = row["memory_session_id"]
-        if sid:
-            snode = f"session::{sid}"
-            if snode not in nodes:
-                srow = session_rows.get(sid)
-                title = (srow["custom_title"] if srow else None) or sid[:8]
-                add_node(snode, "session", _truncate(title, 28), detail=title, meta=sid)
-            add_edge(snode, obs_id, "contains")
+            # Provenance edge to the trace that produced this memory.
+            if mem.trace_id:
+                add_node(
+                    mem.trace_id, "trace", f"trace {_truncate(mem.trace_id, 12)}",
+                    meta=mem.timestamp,
+                )
+                add_edge(mem.memory_id, mem.trace_id, "produced_by")
 
-        for field in ("concepts",):
-            try:
-                for concept in json.loads(row[field] or "[]"):
-                    cnode = f"concept::{concept}"
-                    add_node(cnode, "concept", concept, detail=f"Concept: {concept}")
-                    add_edge(obs_id, cnode, "tagged")
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        for field in ("files_read", "files_modified"):
-            try:
-                for path in json.loads(row[field] or "[]"):
-                    fname = os.path.basename(path)
-                    fnode = f"file::{fname}"
-                    add_node(fnode, "file", fname, detail=path)
-                    add_edge(obs_id, fnode, "modified" if field == "files_modified" else "read")
-            except (json.JSONDecodeError, TypeError):
-                pass
+            # Supersession edge (new fact replacing an older one).
+            if mem.superseded_by:
+                add_node(
+                    mem.superseded_by, "fact", "(superseding entry)",
+                    meta="",
+                )
+                add_edge(mem.memory_id, mem.superseded_by, "superseded_by")
+    except Exception as exc:
+        logger.warning("memory graph build failed: %s", exc)
+        return {"nodes": [], "edges": [], "truncated": truncated}
 
     return {"nodes": list(nodes.values()), "edges": edges, "truncated": truncated}
-
-
-def demo() -> None:
-    """Self-check against whatever DB is actually on disk. No fixtures."""
-    data = build_memory_graph_data(max_observations=50)
-    assert set(data.keys()) == {"nodes", "edges", "truncated"}
-    node_ids = {n["id"] for n in data["nodes"]}
-    for edge in data["edges"]:
-        assert edge["source"] in node_ids and edge["target"] in node_ids
-    types = {n["type"] for n in data["nodes"]}
-    assert types <= set(NODE_TYPES), types
-    print(f"memory_graph demo OK  (nodes={len(data['nodes'])} edges={len(data['edges'])} "
-          f"db_found={os.path.exists(DB_PATH)})")
-
-
-if __name__ == "__main__":
-    demo()

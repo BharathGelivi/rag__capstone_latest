@@ -1,8 +1,8 @@
 """
 Unit tests for the Memory Store.
 
-Tests short-term memory, long-term persistence, session management,
-and CRUD operations on memory entries.
+Tests long-term persistence, session management, kind-aware metadata,
+dedup anchors, and metadata-only updates.
 """
 
 import json
@@ -20,57 +20,7 @@ from src.memory.memory_models import (
     SessionInfo,
 )
 from src.memory.memory_store import MemoryStore
-
-
-class TestMemoryStoreShortTerm(unittest.TestCase):
-    """Tests for the short-term (ring buffer) memory."""
-
-    def setUp(self):
-        self.config = MemoryConfig(
-            short_memory_size=3,
-            persistence_directory=tempfile.mkdtemp(),
-        )
-        self.store = MemoryStore(self.config)
-
-    def tearDown(self):
-        shutil.rmtree(self.config.persistence_directory, ignore_errors=True)
-
-    def test_add_and_get_short_term(self):
-        entry = MemoryEntry(
-            memory_id="mem_1",
-            session_id="s1",
-            question="What is X?",
-            answer="X is Y.",
-        )
-        self.store.add_to_short_term(entry)
-        memories = self.store.get_short_term_memories()
-        self.assertEqual(len(memories), 1)
-        self.assertEqual(memories[0].memory_id, "mem_1")
-
-    def test_short_term_overflow(self):
-        """Buffer size is 3, so adding 4 should evict the oldest."""
-        for i in range(4):
-            self.store.add_to_short_term(
-                MemoryEntry(
-                    memory_id=f"mem_{i}",
-                    session_id="s1",
-                    question=f"Q{i}",
-                    answer=f"A{i}",
-                )
-            )
-        memories = self.store.get_short_term_memories()
-        self.assertEqual(len(memories), 3)
-        # Oldest (mem_0) should be gone
-        ids = [m.memory_id for m in memories]
-        self.assertNotIn("mem_0", ids)
-        self.assertIn("mem_3", ids)
-
-    def test_clear_short_term(self):
-        self.store.add_to_short_term(
-            MemoryEntry(memory_id="mem_1", session_id="s1", question="Q", answer="A")
-        )
-        self.store.clear_short_term()
-        self.assertEqual(len(self.store.get_short_term_memories()), 0)
+from src.memory.memory_utils import compute_text_hash
 
 
 class TestMemoryStoreLongTerm(unittest.TestCase):
@@ -118,6 +68,13 @@ class TestMemoryStoreLongTerm(unittest.TestCase):
         )
         self.assertEqual(self.store.memory_count(), 1)
 
+    def test_health_reports_counts_and_clean_status(self):
+        self.store.save_memory(MemoryEntry(memory_id="m_health", session_id="s1", question="Q", answer="A"))
+        health = self.store.health()
+        self.assertEqual(health["status"], "healthy")
+        self.assertEqual(health["memory_count"], 1)
+        self.assertEqual(health["missing_session_count"], 0)
+
     def test_clear_all_memory(self):
         for i in range(3):
             self.store.save_memory(
@@ -153,6 +110,62 @@ class TestMemoryStoreLongTerm(unittest.TestCase):
         cleared = self.store.clear_session_memory("s1")
         self.assertEqual(cleared, 1)
         self.assertEqual(self.store.memory_count(), 1)
+
+    def test_question_answer_stored_as_fields_not_blob(self):
+        """An answer containing the legacy 'A: ' separator must round-trip intact."""
+        tricky = "Line one.\nA: this is part of the answer itself."
+        self.store.save_memory(MemoryEntry(
+            memory_id="m_qa", session_id="s1", question="What gives?", answer=tricky,
+        ))
+        got = self.store.get_memory("m_qa")
+        self.assertEqual(got.answer, tricky)
+        self.assertEqual(got.question, "What gives?")
+
+    def test_kind_scope_superseded_round_trip(self):
+        self.store.save_memory(MemoryEntry(
+            memory_id="m_f", session_id="s1", question="Q", answer="A",
+            kind="fact", scope="chat", superseded_by=None,
+            content_hash=compute_text_hash("Q\nA"),
+        ))
+        got = self.store.get_memory("m_f")
+        self.assertEqual(got.kind, "fact")
+        self.assertIsNone(got.superseded_by)
+        self.assertEqual(got.content_hash, compute_text_hash("Q\nA"))
+
+    def test_find_by_content_hash(self):
+        h = compute_text_hash("hello world")
+        self.store.save_memory(MemoryEntry(
+            memory_id="m_hash", session_id="s1", question="q", answer="a",
+            content_hash=h,
+        ))
+        self.assertIsNotNone(self.store.find_by_content_hash(h))
+        self.assertIsNone(self.store.find_by_content_hash("nope"))
+
+    def test_bump_access_does_not_clobber_embedding(self):
+        """Metadata-only update: the stored vector must survive a bump."""
+        vec = [1.0] + [0.0] * 767
+        entry = MemoryEntry(memory_id="m_vec", session_id="s1", question="Q", answer="A")
+        self.store.save_memory(entry, vec)
+        entry.access_count = 7
+        self.store.bump_access([entry])
+
+        # If bump_access had gone through upsert-without-embeddings, Chroma
+        # would have recomputed the vector with the null embedding function
+        # and this query would match anything/nothing -- not m_vec best.
+        hits = self.store.search_by_embedding(vec, top_k=1)
+        self.assertEqual(hits["ids"][0][0], "m_vec")
+        got = self.store.get_memory("m_vec")
+        self.assertEqual(got.access_count, 7)
+
+    def test_entries_from_query_is_not_n_plus_one(self):
+        """Query results must convert to entries without get_memory calls."""
+        entry = MemoryEntry(memory_id="m_np1", session_id="s1", question="Q", answer="A")
+        self.store.save_memory(entry, [1.0] + [0.0] * 767)
+        raw = self.store.search_by_embedding([1.0] + [0.0] * 767, top_k=1)
+        with patch.object(self.store, "get_memory", side_effect=AssertionError("N+1!")):
+            hits = self.store.entries_from_query(raw)
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0][0].memory_id, "m_np1")
 
 
 class TestMemoryStoreSession(unittest.TestCase):

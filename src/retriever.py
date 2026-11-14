@@ -92,7 +92,7 @@ class Retriever:
         )
         
         logger.info("Building BM25 Index from ChunkRegistry...")
-        self.registry_chunks = list(self.chunk_registry._records.values())
+        self.registry_chunks = self.chunk_registry.all_records()
         
         # BM25 Sparse Index Setup
         # We use a regex tokenizer and strip standard English stopwords to prevent

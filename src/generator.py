@@ -279,7 +279,7 @@ class Generator:
             api_base=NVIDIA_BASE_URL,
             is_chat_model=True,
             timeout=LLM_REQUEST_TIMEOUT,
-            # 0, not LLM_MAX_RETRIES: the client's own blind retry fires real
+            # 0 on purpose: the client's own blind retry fires real
             # HTTP requests that rate_limiter.call() below never sees, letting
             # retries burst past the shared account-wide budget. All
             # retry/backoff decisions belong to rate_limiter.call() instead.

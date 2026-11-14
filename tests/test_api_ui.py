@@ -18,6 +18,45 @@ class TestApiUI(unittest.TestCase):
         self.assertIn("D_ircot", body["arms"])
         self.assertIn("F_graphrag", body["arms"])
         self.assertIn("statutes", body["corpora"])
+        self.assertIn("device", body)
+
+    def test_trace_metrics_unknown_trace_is_404(self):
+        r = self.client.get("/ui/trace/no-such-trace-id/metrics")
+        self.assertEqual(r.status_code, 404)
+
+    def test_trace_metrics_returns_panel_shape(self):
+        fake_panel = {
+            "trace_id": "TRACE_X",
+            "note": "RAGAS-style ...",
+            "families": [
+                {"family": "RAGAS", "metrics": [
+                    {"key": "faithfulness", "label": "Faithfulness", "value": 0.8,
+                     "definition": "supported claims / total claims", "judge": "local NLI verifier",
+                     "requires": None},
+                ]},
+            ],
+            "verification": {"total": 3, "supported": 2, "partially_supported": 0,
+                             "contradicted": 0, "unsupported": 1, "not_verifiable": 0,
+                             "average_entailment": 0.7},
+            "computed_claims": False,
+            "cached": False,
+        }
+        from unittest.mock import patch
+        with patch("src.api_ui.compute_framework_panel", return_value=fake_panel):
+            r = self.client.get("/ui/trace/TRACE_X/metrics")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["trace_id"], "TRACE_X")
+        fams = {f["family"] for f in body["families"]}
+        self.assertIn("RAGAS", fams)
+        self.assertEqual(body["verification"]["unsupported"], 1)
+
+    def test_reports_list_and_traversal_protection(self):
+        r = self.client.get("/ui/reports")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("reports", r.json())
+        r = self.client.get("/ui/reports/../.env")
+        self.assertEqual(r.status_code, 404)
 
     def test_graph_memory_scope(self):
         r = self.client.get("/ui/graph", params={"scope": "memory", "max_nodes": 20})
@@ -49,6 +88,14 @@ class TestApiUI(unittest.TestCase):
         self.assertFalse(body["searched"])
         self.assertIsInstance(body["memories"], list)
 
+    def test_memory_health_shape(self):
+        r = self.client.get("/ui/memory/health")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertIn(body["status"], {"healthy", "degraded"})
+        self.assertIn("memory_count", body)
+        self.assertIn("malformed_entry_count", body)
+
     def test_memory_search_returns_scored_results(self):
         r = self.client.get("/ui/memory", params={"search": "arrest", "limit": 5})
         self.assertEqual(r.status_code, 200)
@@ -70,6 +117,19 @@ class TestApiUI(unittest.TestCase):
             body = r.json()
             self.assertIn("trace_id", body)
             self.assertIn("prompt_snapshot", body)
+
+
+class TestChatFailure(unittest.TestCase):
+    def test_unexpected_failure_is_logged_and_returns_safe_terminal_event(self):
+        from unittest.mock import patch
+        from src import chat_service
+        with patch.object(chat_service, '_run_chat_turn', side_effect=RuntimeError('secret credential')):
+            with self.assertLogs(chat_service.logger, level='ERROR') as logs:
+                events = list(chat_service.run_chat_turn('question', 'session'))
+        self.assertEqual(events[0]['event'], 'error')
+        self.assertIn('reference_id', events[0])
+        self.assertNotIn('secret credential', str(events))
+        self.assertIn('secret credential', '\n'.join(logs.output))
 
 
 if __name__ == "__main__":

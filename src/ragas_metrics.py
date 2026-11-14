@@ -49,6 +49,8 @@ class RagasMetrics:
 
 import numpy as np
 
+from src import rate_limiter
+
 
 def _cosine_similarity(a: List[float], b: List[float]) -> float:
     """Cosine similarity between two embedding vectors.
@@ -106,7 +108,12 @@ class RagasEvaluator:
 
     def _call_llm(self, prompt: str) -> str:
         try:
-            response = self.llm.chat([ChatMessage(role=MessageRole.USER, content=prompt)])
+            # Every LLM call in this project shares one NVIDIA account budget;
+            # the metric judges (one call per chunk/claim) are exactly the
+            # burst pattern rate_limiter exists to throttle.
+            response = rate_limiter.call(
+                self.llm.chat, [ChatMessage(role=MessageRole.USER, content=prompt)]
+            )
             return str(response.message.content)
         except Exception as e:
             logger.error(f"RAGAS metric LLM call failed: {e}")

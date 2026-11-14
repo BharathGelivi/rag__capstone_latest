@@ -26,15 +26,37 @@ class MemoryConfig:
 
     Loaded from configs/memory.yaml or set programmatically.
     """
-    short_memory_size: int = 10
+    short_memory_size: int = 10  # legacy key, retained for yaml compatibility
     similarity_threshold: float = 0.6
     memory_weight: float = 0.3
     summarization_threshold: int = 20
-    embedding_model: str = "BAAI/bge-base-en-v1.5"
+    # None = follow configs.models.EMBEDDING_MODEL_NAME (single source of
+    # truth; a pinned copy in memory.yaml previously risked embedding-space
+    # drift between memory and retrieval).
+    embedding_model: Optional[str] = None
     persistence_directory: str = "./db/memory"
     auto_save: bool = True
     auto_summary: bool = True
     enable_memory: bool = True
+
+    # Recall across *all* sessions by default (matches the README's promise:
+    # "Semantic recall of past turns, including from other sessions"). Chat
+    # paths use chat_recall(); explicit session filters still work.
+    cross_session: bool = True
+
+    # Recency half-life for ranking (hours). 24h was too aggressive for legal
+    # research that spans days; default is one week.
+    recency_half_life_hours: float = 168.0
+
+    # Near-dup merge threshold (cosine similarity over the same embedding
+    # model): two turns at/above this are one memory, not two.
+    dedup_similarity: float = 0.92
+
+    # Fact-level memory: extract verified claims as compact recallable units.
+    fact_memory: bool = True
+    # Very-high-similarity fact pairs get an NLI contradiction check before
+    # the older one is marked superseded.
+    supersede_similarity: float = 0.95
 
     # Ranking weights
     semantic_weight: float = 0.5
@@ -62,10 +84,13 @@ class MemoryConfig:
 
 @dataclass
 class MemoryEntry:
-    """Represents a single memory entry (one Q&A interaction).
+    """Represents a single memory entry.
 
-    Contains all information needed to reconstruct and search
-    past interactions.
+    ``kind`` distinguishes the three coexisting granularities:
+      - ``"turn"``     a whole Q&A turn (history/audit/graph).
+      - ``"fact"``     a compact, optionally NLI-verified statement extracted
+                       from a turn -- this is what recall precision lives on.
+      - ``"summary"``  an auto-summary of consolidated turns.
     """
     memory_id: str
     session_id: str
@@ -78,6 +103,12 @@ class MemoryEntry:
     retrieved_chunk_ids: List[str] = field(default_factory=list)
     claim_ids: List[str] = field(default_factory=list)
     trace_id: Optional[str] = None
+
+    # Memory-layer fields
+    kind: str = "turn"                          # turn | fact | summary
+    scope: str = "chat"                         # chat | eval (isolation hook)
+    superseded_by: Optional[str] = None         # id of the entry replacing this one
+    content_hash: Optional[str] = None          # dedup anchor (see save paths)
 
     # Metadata
     importance_score: float = 1.0

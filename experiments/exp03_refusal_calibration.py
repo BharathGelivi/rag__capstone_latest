@@ -68,22 +68,12 @@ logger = logging.getLogger(__name__)
 
 PROBES_PATH = os.path.join("experiments", "data", "refusal_probes.csv")
 
-#: Surface forms of a refusal. Deliberately broad: an under-detected refusal
-#: would be counted as a substantive answer and would weaken the finding, so
-#: the detector errs toward recall.
-_REFUSAL_PATTERNS = [
-    r"do(?:es)? not have enough information",
-    r"don'?t have enough information",
-    r"not enough information",
-    r"insufficient information",
-    r"unable to (?:answer|determine|find)",
-    r"cannot (?:answer|determine|be answered)",
-    r"can'?t (?:answer|determine)",
-    r"no (?:relevant )?information (?:is )?(?:available|provided|found)",
-    r"the (?:retrieved )?context does not (?:contain|provide|mention)",
-    r"i (?:do not|don'?t) know",
-]
-_REFUSAL_RE = re.compile("|".join(_REFUSAL_PATTERNS), re.IGNORECASE)
+# The refusal / generation-error detectors live in src/rag_eval.py: this
+# experiment was their birthplace, but evaluation code (rag_eval's metric
+# panel) must share exactly one definition of "this answer is a refusal" or
+# E3's calibration claims and the panel's counts can silently diverge.
+# Re-exported here so existing imports from this module keep working.
+from src.rag_eval import is_generation_error, is_refusal
 
 #: Sentences that assert nothing checkable and must not be counted as claims --
 #: counting them would inflate a refusal's claim count and hide the 0/0 case.
@@ -95,14 +85,6 @@ _NON_ASSERTIVE_RE = re.compile(
     r"|there (?:is|are) no\b"
     r")",
     re.IGNORECASE,
-)
-
-#: A persisted transport/API failure, not an answer. Older traces recorded the
-#: error string in ``generated_answer`` (the bug ``GenerationResult.error``
-#: exists to prevent), so they have to be excluded here or they would be scored
-#: as if the model had said them.
-_GENERATION_ERROR_RE = re.compile(
-    r"^\s*(?:error generating answer|error:|\{'message':)", re.IGNORECASE
 )
 
 #: Context blocks as PromptBuilder writes them into the prompt snapshot.
@@ -126,14 +108,8 @@ LEXICAL_SUPPORT_THRESHOLD = 0.55
 # ---------------------------------------------------------------------------
 # Answer analysis primitives (pure -- unit-testable without any model)
 # ---------------------------------------------------------------------------
-
-
-def is_refusal(answer: str) -> bool:
-    return bool(_REFUSAL_RE.search(answer or ""))
-
-
-def is_generation_error(answer: str) -> bool:
-    return bool(_GENERATION_ERROR_RE.match(answer or ""))
+# is_refusal / is_generation_error are imported from src.rag_eval above (the
+# single canonical definition, shared with the metric panel).
 
 
 def contexts_from_prompt_snapshot(prompt: str) -> List[str]:

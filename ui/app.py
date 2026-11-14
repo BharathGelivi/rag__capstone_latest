@@ -303,7 +303,7 @@ def run_rag_pipeline(
     # and what the experiment measures cannot drift apart.
     t1 = time.time()
     arm = st.session_state.strategy_arm
-    from experiments.exp06_strategy_ablation import ARMS, execute_arm
+    from src.strategy_arms import ARMS, execute_arm
     from src.retriever import RetrievalResult
 
     if arm == "C_hybrid_rerank":
@@ -617,7 +617,7 @@ def render_sidebar():
             help="Which ingested corpus answers are retrieved from.",
         )
 
-        from experiments.exp06_strategy_ablation import ARMS as _ARMS
+        from src.strategy_arms import ARMS as _ARMS
 
         st.session_state.strategy_arm = st.selectbox(
             "🧭 Retrieval strategy",

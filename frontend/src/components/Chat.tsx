@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   createSession,
   getConfig,
+  getFrameworkPanel,
   getSessionMessages,
   getTrace,
   renameSession,
@@ -9,6 +10,7 @@ import {
   type ChatEvent,
   type ClaimVerification,
   type Config,
+  type FrameworkPanel,
 } from "../lib/api";
 import type { RuntimeSettings } from "../App";
 
@@ -29,6 +31,8 @@ interface Chunk {
 }
 
 interface MemoryRecall {
+  memory_id?: string;
+  kind?: string;   // "turn" | "fact" | "summary"
   question: string;
   answer: string;
   session_id: string;
@@ -154,7 +158,202 @@ const CLAIM_STATUS_LABEL: Record<ClaimVerification["status"], string> = {
 };
 
 /* ─── DetailsPanel ───────────────────────────────────────── */
-type PanelTab = "retrieval" | "memory" | "trace" | "evaluation" | "claims";
+type PanelTab = "retrieval" | "memory" | "trace" | "evaluation" | "claims" | "strategy" | "frameworks";
+
+/* ─── StrategyTab: the multi-step retrieval trace (IRCoT / agentic / graph) ── */
+
+interface IrcotStep {
+  iteration: number;
+  query: string;
+  is_initial: boolean;
+  n_new_evidence: number;
+  reasoning_summary: string;
+  termination_reason?: string | null;
+  latency_s?: number;
+}
+
+interface AgentStep {
+  step: number;
+  action: string;
+  arg: string;
+  why: string;
+  n_new_evidence: number;
+  graph_hops: number;
+  relation_paths?: string[][];
+  note?: string;
+  latency_s?: number;
+}
+
+const AGENT_ACTION_LABEL: Record<string, string> = {
+  semantic_search: "🔎 semantic search",
+  lexical_search: "🔤 lexical (exact terms)",
+  graph_expand: "🕸 graph expansion",
+  find_citing_cases: "📚 find citing cases",
+  contradiction_search: "⚖️ contradiction search",
+  stop: "🛑 stop",
+};
+
+function StrategyTab({ meta }: { meta: MsgMeta }) {
+  const md = (meta.retrieval_metadata ?? {}) as Record<string, unknown>;
+  const ircot = (md.ircot_steps ?? null) as IrcotStep[] | null;
+  const agentSteps = (md.agent_step_log ?? null) as AgentStep[] | null;
+  const graphAdded = typeof md.graph_added === "number" ? md.graph_added : 0;
+  const termination = (md.ircot_termination_reason ?? md.agent_termination_reason) as string | undefined;
+
+  return (
+    <div className="details-content">
+      <div className="detail-note" style={{ marginBottom: 8 }}>
+        {ircot ? "IRCoT — interleaved retrieval/reasoning"
+          : agentSteps ? "Agentic controller over retrieval"
+          : "Hybrid retrieval + citation-graph expansion"}
+        {termination ? ` · stopped: ${termination}` : ""}
+        {graphAdded > 0 ? ` · 🕸 graph added ${graphAdded} chunk${graphAdded === 1 ? "" : "s"}` : ""}
+      </div>
+
+      {ircot && ircot.map((s) => (
+        <div key={s.iteration} className="chunk-card">
+          <div className="chunk-header">
+            <span className="chunk-rank">{s.is_initial ? "initial query" : `hop ${s.iteration}`}</span>
+            {s.query ? <span className="chunk-source">{s.query}</span>
+                     : <span className="chunk-source">planner: enough evidence</span>}
+            {s.n_new_evidence > 0 && <span className="dpill">+{s.n_new_evidence} new</span>}
+            {s.termination_reason && <span className="dpill text-muted">{s.termination_reason}</span>}
+          </div>
+          {s.reasoning_summary && <div className="detail-note">{s.reasoning_summary}</div>}
+        </div>
+      ))}
+
+      {agentSteps && agentSteps.map((s) => (
+        <div key={s.step} className="chunk-card">
+          <div className="chunk-header">
+            <span className="chunk-rank">step {s.step}</span>
+            <span className="chunk-source">{AGENT_ACTION_LABEL[s.action] ?? s.action}</span>
+            {s.n_new_evidence > 0 && <span className="dpill">+{s.n_new_evidence} new</span>}
+            {s.graph_hops > 0 && <span className="dpill" style={{ color: "#3b82f6" }}>🕸 {s.graph_hops} hop{s.graph_hops === 1 ? "" : "s"}</span>}
+          </div>
+          {s.arg && <div className="chunk-id">{s.arg}</div>}
+          {s.why && <div className="detail-note">{s.why}</div>}
+          {s.note && <div className="detail-note">⚠ {s.note}</div>}
+          {(s.relation_paths ?? []).length > 0 && (
+            <div className="detail-note">
+              {(s.relation_paths ?? []).map((p) => p.join(" → ")).join("   ·   ")}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {!ircot && !agentSteps && graphAdded === 0 && (
+        <p className="detail-empty">Single-shot retrieval for this arm — nothing multi-step to show.</p>
+      )}
+    </div>
+  );
+}
+
+/* ─── FrameworksTab: per-answer RAGAS / RAGChecker / ARES comparison ────── */
+
+// Panels cost real judge calls, so they are cached per trace id across
+// mount/unmount of the details panel and the Chat view.
+const _panelCache = new Map<string, FrameworkPanel>();
+
+const FAMILY_COLOR: Record<string, string> = {
+  RAGAS: "#3b82f6",
+  RAGChecker: "#f59e0b",
+  ARES: "#ec4899",
+  "this project": "#10a37f",
+};
+
+function VerdictStrip({ v }: { v: NonNullable<FrameworkPanel["verification"]> }) {
+  if (!v.total) return null;
+  const shaky = v.unsupported + v.contradicted;
+  return (
+    <div className="details-pills" style={{ marginBottom: 8 }}>
+      <span className="dpill accent">🔎 {v.total} claim{v.total === 1 ? "" : "s"}</span>
+      <span className="dpill" style={{ color: "#10a37f" }}>✓ {v.supported} supported</span>
+      {v.partially_supported > 0 && <span className="dpill" style={{ color: "#f59e0b" }}>◐ {v.partially_supported} partial</span>}
+      {shaky > 0
+        ? <span className="dpill" style={{ color: "#ef4444" }}>⚠ {shaky} unsupported/contradicted</span>
+        : <span className="dpill" style={{ color: "#10a37f" }}>✓ none contradicted</span>}
+      {v.not_verifiable > 0 && <span className="dpill text-muted">? {v.not_verifiable} not verifiable</span>}
+      <span className="dpill text-muted">avg entailment {v.average_entailment.toFixed(2)}</span>
+    </div>
+  );
+}
+
+function FrameworksTab({ traceId }: { traceId: string }) {
+  const [panel, setPanel] = useState<FrameworkPanel | null>(() => _panelCache.get(traceId) ?? null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = (force = false) => {
+    if (!force && _panelCache.has(traceId)) { setPanel(_panelCache.get(traceId)!); return; }
+    setLoading(true); setError(null);
+    getFrameworkPanel(traceId)
+      .then((p) => { _panelCache.set(traceId, p); setPanel(p); })
+      .catch((e) => setError(String((e as Error).message ?? e)))
+      .finally(() => setLoading(false));
+  };
+
+  // Opening the tab IS the ask -- auto-compute on first open, cache after.
+  useEffect(() => { if (!panel && !loading && !error) load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  if (loading) {
+    return (
+      <div className="details-content">
+        <div className="msg-thinking"><span /><span /><span /></div>
+        <p className="detail-note">
+          Judging this answer with the framework panels (claim check + LLM-judged metrics)…
+        </p>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="details-content">
+        <p className="detail-empty">Framework comparison failed: {error}</p>
+        <button className="retry-btn" onClick={() => load(true)}>🔄 Retry</button>
+      </div>
+    );
+  }
+  if (!panel) return null;
+
+  return (
+    <div className="details-content">
+      {panel.verification && <VerdictStrip v={panel.verification} />}
+      {panel.computed_claims && (
+        <div className="detail-note">
+          🔎 Deep analysis was run on demand for this answer (claim decomposition + NLI
+          verification) and is now saved with the trace.
+        </div>
+      )}
+      {panel.families.map((fam) => (
+        <div key={fam.family} style={{ marginBottom: 12 }}>
+          <div className="detail-note" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span
+              className="tag tag-accent"
+              style={{ borderColor: FAMILY_COLOR[fam.family] ?? "#9ca3af", color: FAMILY_COLOR[fam.family] ?? "#9ca3af" }}
+            >
+              {fam.family === "this project" ? "X-RAG" : fam.family}
+            </span>
+            <span className="text-muted">
+              {fam.family === "this project"
+                ? "metrics defined by this framework"
+                : `${fam.family}-style metrics, same definitions, local judges`}
+            </span>
+          </div>
+          {fam.metrics.map((m) => (
+            <div className="memory-score-row" key={m.key} title={`${m.definition} — judge: ${m.judge}`}>
+              <span>{m.label}</span>
+              {m.value == null ? (
+                <span className="text-muted">— {m.requires ? `needs a ${m.requires}` : "not computed"}</span>
+              ) : scoreBar(m.value, FAMILY_COLOR[fam.family] ?? "#10a37f")}
+            </div>
+          ))}
+        </div>
+      ))}
+      <div className="eval-note">{panel.note}</div>
+    </div>
+  );
+}
 
 function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(!!defaultOpen);
@@ -164,14 +363,14 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
   const memCount = meta.recalled_memories?.length ?? 0;
   const claimCount = meta.claims?.length ?? meta.claimCount ?? 0;
   const hasClaimData = meta.claims !== undefined || meta.claimError != null;
+  const md = (meta.retrieval_metadata ?? {}) as Record<string, unknown>;
+  const hasStrategy = Boolean(md.ircot_steps || md.agent_step_log || ((md.graph_added as number) ?? 0) > 0);
+  const hasTrace = !!meta.trace_id;
 
-  // Lightweight evaluation heuristics
-  const avgScore = chunkCount
-    ? (meta.chunks!.reduce((s, c) => s + c.similarity_score, 0) / chunkCount)
-    : 0;
-  const topScore = chunkCount
-    ? Math.max(...meta.chunks!.map(c => c.similarity_score))
-    : 0;
+  // Shaky-claim count for the headline verdict pill.
+  const shakyClaims = (meta.claims ?? []).filter(
+    (c) => c.status === "UNSUPPORTED" || c.status === "CONTRADICTED"
+  ).length;
 
   return (
     <div className="details-root">
@@ -188,8 +387,13 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
           )}
           {memCount > 0 && <span className="dpill">🧠 {memCount}</span>}
           {hasClaimData && <span className="dpill">🔎 {claimCount} claim{claimCount === 1 ? "" : "s"}</span>}
+          {meta.claims !== undefined && claimCount > 0 && (
+            shakyClaims > 0
+              ? <span className="dpill" style={{ color: "#ef4444" }}>⚠ {shakyClaims} shaky</span>
+              : <span className="dpill" style={{ color: "#10a37f" }}>✓ claims clean</span>
+          )}
           {meta.total_time != null && <span className="dpill">⏱ {fmt(meta.total_time)}</span>}
-          {meta.device && <span className="dpill" style={{ color: "#10a37f", fontWeight: 500 }}>⚡ {meta.device.includes("GPU") ? "GPU" : "CPU"}</span>}
+          {meta.device && <span className="dpill" style={{ color: "#10a37f", fontWeight: 500 }}>⚡ {{ CPU: "CPU", MPS: "MPS" }[meta.device] ?? meta.device}</span>}
         </span>
       </button>
 
@@ -199,10 +403,12 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
           <div className="details-tabs">
             {([
               ["retrieval", `📄 Retrieval (${chunkCount})`],
+              ...(hasStrategy ? [["strategy", "🧭 Strategy"] as [PanelTab, string]] : []),
               ["memory",    `🧠 Memories (${memCount})`],
               ["trace",     "🕐 RAG Trace"],
               ["evaluation","📊 Evaluation"],
               ...(hasClaimData ? [["claims", `🔎 Claims (${claimCount})`] as [PanelTab, string]] : []),
+              ...(hasTrace    ? [["frameworks", "🏁 Frameworks"] as [PanelTab, string]] : []),
             ] as [PanelTab, string][]).map(([t, label]) => (
               <button
                 key={t}
@@ -250,8 +456,13 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
             <div className="details-content">
               {(meta.recalled_memories ?? []).map((m, i) => (
                 <div key={i} className="memory-card">
-                  <div className="memory-q">Q: {m.question}</div>
-                  <div className="memory-a">A: {m.answer}{m.answer.length >= 300 ? "…" : ""}</div>
+                  <div className="memory-q">
+                    {m.kind && m.kind !== "turn" && (
+                      <span className="dpill accent" style={{ marginRight: 6 }}>{m.kind}</span>
+                    )}
+                    {m.kind === "fact" ? m.answer : `Q: ${m.question}`}
+                  </div>
+                  <div className="memory-a">{m.kind === "fact" ? `(asked: ${m.question})` : `A: ${m.answer}`}{m.answer.length >= 300 ? "…" : ""}</div>
                   <div className="memory-scores">
                     <div className="memory-score-row">
                       <span>Semantic</span>{scoreBar(m.semantic_score, "#10a37f")}
@@ -324,54 +535,54 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
           {tab === "evaluation" && (
             <div className="details-content">
               <div className="eval-grid">
-                <div className="eval-card">
-                  <div className="eval-label">Groundedness</div>
-                  <div className="eval-value" style={{ color: (meta.groundedness ?? 0.9) >= 0.8 ? "#10a37f" : "#f59e0b" }}>
-                    {meta.groundedness != null ? `${(meta.groundedness * 100).toFixed(0)}%` : "92%"}
+                {([
+                  { label: "Groundedness", value: meta.groundedness,
+                    desc: "Fraction of answer sentences directly grounded in retrieved context (hallucination-free)." },
+                  { label: "Faithfulness", value: meta.faithfulness,
+                    desc: "Factual consistency of claims vs retrieved source evidence." },
+                  { label: "Answer Relevancy", value: meta.answer_relevancy,
+                    desc: "Semantic cosine alignment between user question and generated answer." },
+                  { label: "Context Precision", value: meta.context_precision,
+                    desc: "Mean cross-encoder score across the ranked evidence." },
+                  { label: "Citation Precision", value: meta.citation_precision,
+                    desc: "Share of the answer's chunk citations that exist in the retrieved evidence." },
+                ]).map((card) => (
+                  <div className="eval-card" key={card.label}>
+                    <div className="eval-label">{card.label}</div>
+                    {/* Missing data must read as missing, never as a plausible
+                        number -- this card previously fell back to invented
+                        constants ("92%", "88%", the top retrieval score),
+                        which is metrics-dressing. "—" is the honest display. */}
+                    <div
+                      className="eval-value"
+                      style={card.value != null ? { color: card.value >= 0.8 ? "#10a37f" : "#f59e0b" } : {}}
+                    >
+                      {card.value != null ? `${(card.value * 100).toFixed(0)}%` : "—"}
+                    </div>
+                    <div className="eval-desc">{card.desc}</div>
                   </div>
-                  <div className="eval-desc">Fraction of answer sentences directly grounded in retrieved context (hallucination-free).</div>
-                </div>
+                ))}
                 <div className="eval-card">
-                  <div className="eval-label">Faithfulness</div>
-                  <div className="eval-value" style={{ color: (meta.faithfulness ?? 0.88) >= 0.8 ? "#10a37f" : "#f59e0b" }}>
-                    {meta.faithfulness != null ? `${(meta.faithfulness * 100).toFixed(0)}%` : "88%"}
-                  </div>
-                  <div className="eval-desc">Factual consistency of claims vs retrieved source evidence.</div>
-                </div>
-                <div className="eval-card">
-                  <div className="eval-label">Answer Relevancy</div>
-                  <div className="eval-value">
-                    {meta.answer_relevancy != null ? `${(meta.answer_relevancy * 100).toFixed(0)}%` : `${(topScore * 100).toFixed(0)}%`}
-                  </div>
-                  <div className="eval-desc">Semantic cosine alignment between user question and generated answer.</div>
-                </div>
-                <div className="eval-card">
-                  <div className="eval-label">Context Precision</div>
-                  <div className="eval-value">
-                    {meta.context_precision != null ? `${(meta.context_precision * 100).toFixed(0)}%` : `${(avgScore * 100).toFixed(0)}%`}
-                  </div>
-                  <div className="eval-desc">Rank-weighted precision of top-k retrieved evidence chunks.</div>
-                </div>
-                <div className="eval-card">
-                  <div className="eval-label">Citation Precision</div>
-                  <div className="eval-value">
-                    {meta.citation_precision != null ? `${(meta.citation_precision * 100).toFixed(0)}%` : "100%"}
-                  </div>
-                  <div className="eval-desc">Portion of chunk and statutory citations found in retrieved evidence.</div>
-                </div>
-                <div className="eval-card">
-                  <div className="eval-label">Hardware Acceleration</div>
+                  <div className="eval-label">Device</div>
                   <div className="eval-value" style={{ fontSize: 13, color: "#10a37f" }}>
-                    {meta.device ?? "NVIDIA RTX 4060 GPU (CUDA)"}
+                    {meta.device ?? "—"}
                   </div>
-                  <div className="eval-desc">Fast neural embedding, hybrid RRF reranking, and verification pipeline.</div>
+                  <div className="eval-desc">The machine this answer was computed on (reported by the backend, not assumed).</div>
                 </div>
               </div>
               <div className="eval-note">
-                ⚡ <strong>Standard RAG Evaluation Metrics</strong>: Measures retrieval precision, semantic relevancy, citation validity, and hallucination resistance.
+                ⚡ These are fast heuristics computed at answer time. For judge-based
+                RAGAS / RAGChecker / ARES-style scores on this answer, open the
+                <strong> 🏁 Frameworks</strong> tab.
               </div>
             </div>
           )}
+
+          {/* ── Strategy (multi-step retrieval log) ───────── */}
+          {tab === "strategy" && <StrategyTab meta={meta} />}
+
+          {/* ── Frameworks (cross-framework metric panel) ─── */}
+          {tab === "frameworks" && meta.trace_id && <FrameworksTab traceId={meta.trace_id} />}
 
           {/* ── Claims (decomposition + NLI verification) ──── */}
           {tab === "claims" && (
@@ -419,7 +630,11 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
                     <span>Neutral</span>{scoreBar(c.neutral_score, "#9ca3af")}
                   </div>
                   {c.best_chunk_id && (
-                    <div className="chunk-id">Source chunk: {c.best_chunk_id}</div>
+                    <div className="chunk-id">
+                      {c.best_chunk_id.startsWith("memory:")
+                        ? "🧠 Grounded in a recalled memory (not a document)"
+                        : `Source chunk: ${c.best_chunk_id}`}
+                    </div>
                   )}
                 </div>
               ))}
@@ -468,6 +683,62 @@ function ThinkingBox({ meta }: { meta: MsgMeta }) {
             ? (meta.reasoning || "…")
             : pipelineLines.map((l, i) => <div key={i}>{l}</div>)}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── ActionBar: copy / trace-id / re-run-with-arm ────────────────────────── */
+function ActionBar({
+  content, traceId, arms, currentArm, busy, onRunAgain,
+}: {
+  content: string;
+  traceId?: string;
+  arms: string[];
+  currentArm: string;
+  busy: boolean;
+  onRunAgain: (arm: string) => void;
+}) {
+  const [copied, setCopied] = useState<"answer" | "trace" | null>(null);
+
+  const copy = (text: string, tag: "answer" | "trace") => {
+    void navigator.clipboard?.writeText(text).then(() => {
+      setCopied(tag);
+      window.setTimeout(() => setCopied((c) => (c === tag ? null : c)), 1500);
+    });
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 4 }}>
+      <button className="retry-btn" onClick={() => copy(content, "answer")}>
+        {copied === "answer" ? "✓ Copied" : "📋 Copy answer"}
+      </button>
+      {traceId && (
+        <button
+          className="retry-btn"
+          title="Copy this turn's RAGTrace id (paste into scripts/generate_diagnostic_report.py)"
+          onClick={() => copy(traceId, "trace")}
+        >
+          {copied === "trace" ? "✓ Copied" : "🪪 Trace ID"}
+        </button>
+      )}
+      {arms.length > 0 && (
+        <select
+          className="topbar-select"
+          value=""
+          disabled={busy}
+          title="Ask the same question again under a different retrieval arm — the answers land side by side, so you can compare what each strategy did"
+          onChange={(e) => {
+            const chosen = e.target.value;
+            e.target.value = "";
+            if (chosen) onRunAgain(chosen);
+          }}
+        >
+          <option value="" disabled>⟲ Re-run with arm…</option>
+          {arms.filter((a) => a !== currentArm).map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
       )}
     </div>
   );
@@ -580,7 +851,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
     });
   }
 
-  async function send(question?: string) {
+  async function send(question?: string, armOverride?: string) {
     const q = (question ?? input).trim();
     if (!q || busy) return;
 
@@ -596,9 +867,13 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
     setBusy(true);
     setStageLabel("Starting…");
 
-    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    // An arm-override re-run asks the SAME question fresh (no chat history) --
+    // otherwise the condenser would resolve it against the previous turn and
+    // the two answers would no longer differ only in retrieval arm.
+    const armUsed = armOverride ?? arm;
+    const history = armOverride ? [] : messages.map((m) => ({ role: m.role, content: m.content }));
     const isFirstQuestion = messages.length === 0;
-    const initialMeta: MsgMeta = { arm, corpus };
+    const initialMeta: MsgMeta = { arm: armUsed, corpus };
 
     setMessages((m) => [
       ...m,
@@ -614,7 +889,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
       for await (const evt of streamChat({
         question: q,
         session_id: sessId,
-        arm,
+        arm: armUsed,
         corpus,
         chat_history: history,
         memory_enabled: settings.memoryEnabled,
@@ -629,7 +904,9 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
         onSessionRenamed();
       }
     } catch (err) {
-      if ((err as Error).name !== "AbortError") throw err;
+      if ((err as Error).name !== "AbortError") {
+        applyEvent({ event: 'error', message: (err as Error).message || 'The chat request failed. Please retry.' }, q);
+      }
       // Stopped by the user -- keep whatever text/chunks already streamed in.
     } finally {
       abortRef.current = null;
@@ -804,6 +1081,19 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
                     className="retry-btn"
                     onClick={() => retry(m.failedQuestion!)}
                   >🔄 Retry</button>
+                )}
+                {m.role === "assistant" && m.content && !m.failedQuestion && (
+                  <ActionBar
+                    content={m.content}
+                    traceId={m.meta?.trace_id}
+                    arms={config?.arms ?? []}
+                    currentArm={m.meta?.arm ?? arm}
+                    busy={busy}
+                    onRunAgain={(a) => {
+                      const prevUser = [...messages.slice(0, i)].reverse().find((x) => x.role === "user");
+                      if (prevUser && !busy) void send(prevUser.content, a);
+                    }}
+                  />
                 )}
                 {/* Details panel — as soon as there's retrieval/memory data to
                     show, not just once the answer has finished streaming. */}

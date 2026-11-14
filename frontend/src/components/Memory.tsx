@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getMemory, type ScoredMemory } from "../lib/api";
+import { getMemory, getMemoryHealth, type MemoryHealth, type ScoredMemory } from "../lib/api";
 
 function scoreBar(v: number, color = "var(--color-accent)") {
   const pct = Math.min(100, Math.round(v * 100));
@@ -17,6 +17,7 @@ export default function Memory() {
   const [memories, setMemories] = useState<ScoredMemory[]>([]);
   const [searched, setSearched] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [health, setHealth] = useState<MemoryHealth | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search), 300);
@@ -31,6 +32,8 @@ export default function Memory() {
       .finally(() => setLoading(false));
   }, [debounced]);
 
+  useEffect(() => { getMemoryHealth().then(setHealth).catch(() => setHealth(null)); }, []);
+
   return (
     <div className="memory-page">
       <div className="topbar">
@@ -43,6 +46,7 @@ export default function Memory() {
             placeholder="Search memories…"
           />
         </div>
+        {health && <span className={`tag ${health.status === "healthy" ? "tag-accent" : "tag-outline"}`}>{health.status} · {health.memory_count} memories</span>}
       </div>
 
       <div className="memory-grid xrag-scroll">
@@ -57,6 +61,12 @@ export default function Memory() {
             <i className="corner bl" /><i className="corner br" />
             <div className="memory-card-head">
               <span className="tag tag-accent">{sr.memory.session_id.slice(0, 12)}</span>
+              {sr.memory.kind && sr.memory.kind !== "turn" && (
+                <span className="tag tag-accent-2">{sr.memory.kind}</span>
+              )}
+              {sr.memory.superseded_by && (
+                <span className="tag tag-outline">superseded</span>
+              )}
               <span className="memory-card-time">{new Date(sr.memory.timestamp).toLocaleString()}</span>
             </div>
             <div className="memory-card-q"><strong>Q:</strong> {sr.memory.question}</div>

@@ -18,7 +18,7 @@ Provides three things every experiment needs:
 
 3. **Statistics.** Correlation and chance-corrected agreement helpers. The
    binary-kappa and Pearson implementations are imported from
-   ``scripts/analyze_agreement.py`` rather than reimplemented, so the paper's
+   ``src/stats.py`` rather than reimplemented, so the paper's
    agreement numbers come from exactly one code path.
 """
 
@@ -36,10 +36,10 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-# Reuse -- do not reimplement. scripts/analyze_agreement.py is the canonical
-# home for the binary agreement statistics reported in the paper.
-from scripts.analyze_agreement import _cohens_kappa as binary_cohens_kappa
-from scripts.analyze_agreement import _pearson_r as _pearson_r_raw
+# Reuse -- do not reimplement. src/stats.py is the canonical home for the
+# binary agreement statistics reported in the paper.
+from src.stats import cohens_kappa as binary_cohens_kappa
+from src.stats import pearson_r as _pearson_r_raw
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def clean_series(xs: Sequence[Any]) -> List[Optional[float]]:
 
 def pearson_r(xs: Sequence[Any], ys: Sequence[Any]) -> Optional[float]:
     """
-    ``scripts.analyze_agreement._pearson_r`` with NaN filtered at the boundary.
+    ``src.stats.pearson_r`` with NaN filtered at the boundary.
 
     The underlying implementation is the canonical one and is left untouched;
     it treats NaN as a real value, which turns any correlation involving a
@@ -250,6 +250,9 @@ class Checkpoint:
         state.json      run status, seed, mode, plan fingerprint
         records.jsonl   one JSON object per completed example
         summary.json    aggregate result, written once the run completes
+
+    The suite-level ``run_manifest.json`` records the selected experiments,
+    seed, mode, extras, and configuration owners for each invocation.
 
     Records are appended and flushed one at a time, so a process killed
     mid-experiment loses at most the example currently in flight. A truncated
@@ -429,7 +432,10 @@ class Experiment(ABC):
 
         specs = self.plan(ctx)
         if ctx.limit is not None:
-            specs = specs[: ctx.limit]
+            if ctx.extra.get("sample_spread") and len(specs) > ctx.limit:
+                specs = [specs[i * len(specs) // ctx.limit] for i in range(ctx.limit)]
+            else:
+                specs = specs[: ctx.limit]
 
         if not specs:
             raise RuntimeError(f"{self.key}: plan() produced no examples.")
