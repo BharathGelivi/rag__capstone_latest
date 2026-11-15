@@ -1,21 +1,11 @@
-"""
-Research Improvement #1: Diagnostic Accuracy of Root-Cause Attribution.
+"""Score saved diagnoses against trace-specific reviewed references.
 
-Every prior evaluation (RAGAS/RAGChecker/ARES agreement, correlation) has
-asked whether X-RAG's *scores* track the baselines' scores. None of them
-have asked the more important question for a diagnostic tool: is X-RAG's
-*diagnosis* actually correct? eval/eval_dataset.csv already carries an
-expected_failure_type label for every injected-failure example (and an
-implicit "healthy" label -- empty string -- for the rest); this script is
-the first thing to compare that against xrag_primary_cause from
-artifacts/benchmark_comparison/results.json.
+Accuracy uses human_review or controlled_intervention references. Model-consensus
+references contribute to provisional agreement. The question dataset's expected
+failure labels are reported separately as scenario expectation agreement.
 
-Produces a confusion matrix and per-category precision/recall/F1, computed
-in pure Python (no numpy/sklearn), consistent with scripts/analyze_agreement.py.
-
-Usage:
-    python -m scripts.evaluate_diagnostic_accuracy
-"""
+Optional --reviewed-labels accepts a JSON array of objects containing trace_id,
+label and source. Missing references leave execution accuracy unmeasured."""
 
 import argparse
 import csv
@@ -23,6 +13,8 @@ import json
 import os
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
+from pathlib import Path
+from src.diagnostic_labels import reviewed_reference, load_reviewed_references
 
 RESULTS_DIR = "artifacts/benchmark_comparison"
 
@@ -94,14 +86,25 @@ def find_mismatches(expected: Dict[str, str], predicted: Dict[str, str]) -> List
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate X-RAG's root-cause diagnostic accuracy against eval_dataset's expected_failure_type.")
+    parser = argparse.ArgumentParser(description="Score trace-specific diagnostic references and report scenario expectations separately.")
     parser.add_argument("--eval-dataset", default="eval/eval_dataset.csv")
     parser.add_argument("--results", default=os.path.join(RESULTS_DIR, "results.json"))
+    parser.add_argument("--reviewed-labels", type=Path, default=Path("eval/diagnostic_reviews.json"))
     args = parser.parse_args()
 
-    expected = load_eval_dataset(args.eval_dataset)
+    scenario_expected = load_eval_dataset(args.eval_dataset)
     predicted = load_results(args.results)
+    rows = json.loads(Path(args.results).read_text(encoding="utf-8"))
+    references = load_reviewed_references(args.reviewed_labels) if args.reviewed_labels.exists() else {}
+    reviewed = {}
+    for row in rows:
+        row = {**row, "diagnostic_reference": references.get(row.get("trace_id"), row.get("diagnostic_reference"))}
+        reference = reviewed_reference(row)
+        if reference:
+            reviewed[row["eval_id"]] = reference
+    expected = {eid: ref["cause"] for eid, ref in reviewed.items() if ref["source"] != "model_consensus"}
     pairs = join_labels(expected, predicted)
+    reference_pairs = join_labels({eid: ref["cause"] for eid, ref in reviewed.items()}, predicted)
 
     confusion_matrix = compute_confusion_matrix(pairs)
     per_category_metrics = compute_per_category_metrics(pairs)
@@ -113,7 +116,12 @@ def main():
 
     output = {
         "n_examples_evaluated": len(pairs),
-        "n_total_eval_dataset": len(expected),
+        "n_total_eval_dataset": len(scenario_expected),
+        "n_reviewed_traces": len(reviewed),
+        "n_unreviewed_traces": len(predicted) - len(reviewed),
+        "reference_agreement": compute_overall_accuracy(reference_pairs),
+        "scenario_expectation_agreement": compute_overall_accuracy(join_labels(scenario_expected, predicted)),
+        "reference_scope": "Accuracy uses human_review or controlled_intervention references tied to trace IDs. Model consensus contributes to provisional agreement only. Question expectations do not establish execution accuracy.",
         "overall_accuracy": overall_accuracy,
         "confusion_matrix": confusion_matrix,
         "per_category_metrics": per_category_metrics,

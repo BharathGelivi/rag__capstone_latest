@@ -125,7 +125,7 @@ class TestPipelineStateAnalyzer(unittest.TestCase):
 
         matrix = self.analyzer.analyze(trace, claim_set, verification)
         
-        self.assertEqual(matrix.get(PipelineStage.RETRIEVER).status, PipelineStatus.PASS)
+        self.assertEqual(matrix.get(PipelineStage.RETRIEVER).status, PipelineStatus.UNKNOWN)
         self.assertEqual(matrix.get(PipelineStage.GENERATOR).status, PipelineStatus.FAIL)
         # GROUNDING now keys off CONTRADICTED specifically; plain UNSUPPORTED claims pass.
         self.assertEqual(matrix.get(PipelineStage.GROUNDING).status, PipelineStatus.PASS)
@@ -163,6 +163,15 @@ class TestPipelineStateAnalyzer(unittest.TestCase):
         matrix = self.analyzer.analyze(trace, claim_set, verification)
         self.assertEqual(matrix.get(PipelineStage.GROUNDING).status, PipelineStatus.UNKNOWN)
 
+    def test_unverifiable_claims_never_pass_grounding(self):
+        trace = self.create_mock_trace("UNVERIFIABLE", max_score=0.8)
+        for statuses in ([VerificationStatus.NOT_VERIFIABLE],
+                         [VerificationStatus.SUPPORTED, VerificationStatus.NOT_VERIFIABLE]):
+            with self.subTest(statuses=statuses):
+                verification = self.create_mock_verification(trace.trace_id, statuses)
+                matrix = self.analyzer.analyze(trace, self.create_mock_claim_set(trace.trace_id, len(statuses)), verification)
+                self.assertEqual(matrix.get(PipelineStage.GROUNDING).status, PipelineStatus.UNKNOWN)
+
     def test_corpus_failure_low_relevance(self):
         trace_id = "TRACE_CORPUS_FAIL"
         trace = self.create_mock_trace(
@@ -175,7 +184,7 @@ class TestPipelineStateAnalyzer(unittest.TestCase):
         matrix = self.analyzer.analyze(trace, claim_set, verification)
         self.assertEqual(matrix.get(PipelineStage.CORPUS).status, PipelineStatus.FAIL)
 
-    def test_chunking_boundary_failure(self):
+    def test_chunking_boundary_requires_combined_support(self):
         trace_id = "TRACE_CHUNKING_FAIL"
         trace = self.create_mock_trace(
             trace_id, max_score=0.8,
@@ -189,7 +198,23 @@ class TestPipelineStateAnalyzer(unittest.TestCase):
         # create_mock_verification hardcodes best_chunk_id="chunk1" for every result.
 
         matrix = self.analyzer.analyze(trace, claim_set, verification)
+        self.assertEqual(matrix.get(PipelineStage.CHUNKING).status, PipelineStatus.UNKNOWN)
+        verification.results[0].boundary_check = {
+            "confirmed": True, "chunk_ids": ["chunk1", "chunk2"],
+            "individual_entailment": [0.5, 0.4], "combined_entailment": 0.95,
+        }
+        matrix = self.analyzer.analyze(trace, claim_set, verification)
         self.assertEqual(matrix.get(PipelineStage.CHUNKING).status, PipelineStatus.FAIL)
+
+    def test_one_supported_claim_does_not_pass_retrieval_for_ten_claims(self):
+        trace = self.create_mock_trace("INCOMPLETE", max_score=0.9,
+                                      execution_statistics={"pre_rerank_min_dense_distance": 0.1})
+        statuses = [VerificationStatus.SUPPORTED] + [VerificationStatus.UNSUPPORTED] * 9
+        verification = self.create_mock_verification(trace.trace_id, statuses)
+        matrix = self.analyzer.analyze(trace, self.create_mock_claim_set(trace.trace_id, 10), verification)
+        self.assertEqual(matrix.get(PipelineStage.RETRIEVER).status, PipelineStatus.UNKNOWN)
+        self.assertEqual(matrix.get(PipelineStage.CORPUS).status, PipelineStatus.UNKNOWN)
+        self.assertEqual(matrix.get(PipelineStage.RETRIEVER).metadata["supported_claim_fraction"], 0.1)
 
     def test_chunk_utilization_rate_trace_a(self):
         # Trace A: 4 chunks retrieved, 1 unique chunk used -> 0.25

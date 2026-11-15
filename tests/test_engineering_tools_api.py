@@ -80,13 +80,14 @@ class TestEngineeringToolsApi(unittest.TestCase):
         from src.chat_service import deep_analyze
         from src.claim_decomposer import CandidateClaim, CandidateClaimSet
         from src.trace_replay import captured_chunks
-        from src.claim_verifier import VerificationStatus
+        from src.claim_verifier import VerificationStatus, VerificationResult
         answer = "A fine applies. [Chunk-ID: c2]"
         self.trace.generated_answer = answer
         candidate = CandidateClaim("claim", self.trace.trace_id, "A penalty applies.", "S1", 0, 0, 15)
         claims = CandidateClaimSet(trace_id=self.trace.trace_id)
         claims.add_claim(candidate)
-        result = SimpleNamespace(claim_id="claim", claim_text=candidate.claim_text,
+        result = VerificationResult(verification_id="verification", trace_id=self.trace.trace_id,
+            best_chunk_score=.95, best_sentence_id=None, claim_id="claim", claim_text=candidate.claim_text,
             verification_status=VerificationStatus.SUPPORTED, verification_reason="Supported by best evidence",
             confidence=.95, entailment_score=.95, contradiction_score=.01, neutral_score=.04,
             best_chunk_id="c1", best_chunk_rank=1, evidence_text="Text for c1.", verified_by="nli")

@@ -514,6 +514,11 @@ def inject_truncate_at_boundary(case: InjectedCase, rng: random.Random) -> None:
                 round(1.0 - entail - 0.05, 4),
             )
         )
+        # E1 constructs verification signals. Live verification measures these scores.
+        case.verification.results[-1].boundary_check = {
+            "confirmed": True, "chunk_ids": [anchor["chunk_id"], neighbour_id],
+            "individual_entailment": [entail, entail], "combined_entailment": 0.95,
+        }
     case.verification = _summarize(case.trace.trace_id, case.verification.results)
     case.provenance["boundary_split_claims"] = n_split
     case.provenance["adjacent_chunk_id"] = neighbour_id

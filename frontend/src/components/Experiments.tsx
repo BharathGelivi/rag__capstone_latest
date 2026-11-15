@@ -1,3 +1,5 @@
+import ResearchDashboard from "./ResearchDashboard";
+import "./research-dashboard.css";
 import { useEffect, useRef, useState } from "react";
 import { API_BASE, getExperimentRuns, type ExperimentRuns } from "../lib/api";
 
@@ -16,16 +18,20 @@ export default function Experiments() {
   const [source, setSource] = useState("active");
   const [recordIndex, setRecordIndex] = useState(0);
   const resultsRef = useRef<HTMLElement>(null);
+  const detailRequest = useRef(0);
+  useEffect(() => () => { detailRequest.current++; }, [source]);
   useEffect(() => { if (detail) resultsRef.current?.scrollIntoView({behavior: "smooth", block: "start"}); }, [detail]);
   const [opening, setOpening] = useState(false);
   async function openExperiment(key: string) {
+    const requestId = ++detailRequest.current;
     setOpening(true); setError(null); setDetail(null); setRecordIndex(0);
     try {
       const response = await fetch(`${API_BASE}/ui/experiments/${key}?source=${source}`);
       if (!response.ok) throw new Error(`Could not open results (HTTP ${response.status})`);
-      setDetail(await response.json());
-    } catch (e) { setError(e instanceof Error ? e.message : "Could not open results"); }
-    finally { setOpening(false); }
+      const result = await response.json();
+      if (requestId === detailRequest.current) setDetail(result);
+    } catch (e) { if (requestId === detailRequest.current) setError(e instanceof Error ? e.message : "Could not open results"); }
+    finally { if (requestId === detailRequest.current) setOpening(false); }
   }
   useEffect(() => {
     let cancelled = false;
@@ -35,7 +41,8 @@ export default function Experiments() {
   }, [source]);
   return <main className="page-content experiments-page">
     <div className="page-heading"><div><span className="eyebrow">EVALUATION</span><h1>Experiments</h1><p>Ordered runs, claims, and reproducibility metadata.</p></div></div>
-    <select className="run-picker" aria-label="Run selection" value={source} onChange={e => {setSource(e.target.value); setData(null); setDetail(null);}}><option value="active">Latest run</option><option value="legacy">Previous saved results</option></select>
+    <select className="run-picker" aria-label="Run selection" value={source} onChange={e => {detailRequest.current++; setSource(e.target.value); setData(null); setDetail(null); setOpening(false);}}><option value="active">Latest run</option><option value="legacy">Previous saved results</option></select>
+    <ResearchDashboard source={source} onInspect={key => void openExperiment(key)} />
     {data && <div className="experiment-overview"><div><strong>{data.experiments.filter(e => e.status === "complete").length} / {data.experiments.length}</strong><span>studies complete</span></div><div><strong>{data.experiments.reduce((sum, e) => sum + (e.n_recorded || 0), 0)}</strong><span>examples recorded</span></div><div><strong>{data.monitor?.status || "Saved results"}</strong><span>Refreshes every 15 seconds</span></div></div>}
     {error && <div className="empty-state">{error}</div>}
     {!error && !data && <div className="empty-state">Loading experiment status…</div>}

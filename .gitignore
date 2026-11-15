@@ -45,3 +45,35 @@ dist/
 *.tsbuildinfo
 .env.*
 !.env.example
+
+# Local environments and tooling
+.venv/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.aws/
+.codex/
+.agents/
+.streamlit/secrets.toml
+
+# Generated logs, backups, and temporary files
+*.log
+*.bak
+*.bak_*
+*.tmp
+*.swp
+*~
+
+# Test and coverage output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+coverage/
+test-results/
+playwright-report/
+
+# Local audit captures and session handoff notes
+/audit/
+/SESSION_WRAP_UP.md

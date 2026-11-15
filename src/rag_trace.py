@@ -9,6 +9,7 @@ import os
 import json
 import uuid
 import logging
+import threading
 from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import List, Dict, Any, Optional
@@ -24,6 +25,7 @@ from configs.models import (
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+TRACE_WRITE_LOCK = threading.RLock()
 
 @dataclass
 class RAGTrace:
@@ -179,8 +181,9 @@ class RAGTraceBuilder:
         
         logger.info(f"Saving RAGTrace to {file_path}...")
         
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(trace.to_json())
+        from src.memory.memory_utils import save_json
+        with TRACE_WRITE_LOCK:
+            save_json(asdict(trace), file_path)
             
         logger.info("RAGTrace saved successfully.")
         return file_path

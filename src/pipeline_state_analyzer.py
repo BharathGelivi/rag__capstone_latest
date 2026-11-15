@@ -111,6 +111,9 @@ class PipelineStateAnalyzer:
         ]
         
         has_supported_claim = len(supported_verifications) > 0
+        all_supported = bool(verification.results) and all(
+            v.verification_status == VerificationStatus.SUPPORTED for v in verification.results
+        )
         all_unsupported = len(unsupported_verifications) == len(verification.results) and len(verification.results) > 0
         some_unsupported = len(unsupported_verifications) > 0
         
@@ -137,9 +140,9 @@ class PipelineStateAnalyzer:
                 f"falls outside the relevance threshold, suggesting the corpus lacks this content."
             )
             corpus_conf = 0.85
-        elif has_supported_claim:
+        elif all_supported:
             corpus_status = PipelineStatus.PASS
-            corpus_obs = "Corpus contains sufficient relevant content, evidenced by at least one supported claim."
+            corpus_obs = "Corpus evidence supports all extracted answer claims; full question coverage is unmeasured."
             corpus_conf = 0.9
         else:
             corpus_status = PipelineStatus.UNKNOWN
@@ -158,10 +161,14 @@ class PipelineStateAnalyzer:
         ))
         
         # 2. Retriever
-        if has_supported_claim:
+        if all_supported:
             retriever_status = PipelineStatus.PASS
-            retriever_obs = "At least one retrieved chunk provides supporting evidence for a verified claim."
+            retriever_obs = "Retrieved evidence supports all extracted answer claims; full question coverage is unmeasured."
             retriever_conf = 0.95
+        elif has_supported_claim:
+            retriever_status = PipelineStatus.UNKNOWN
+            retriever_obs = f"Evidence supports or partly supports {len(supported_verifications)}/{len(verification.results)} claims; retrieval coverage is incomplete or uncertain."
+            retriever_conf = 0.5
         elif all_unsupported and max_score < self.retrieval_score_threshold:
             retriever_status = PipelineStatus.FAIL
             retriever_obs = "No retrieved chunks provide support, and retrieval scores strongly indicate a lack of useful evidence."
@@ -192,6 +199,9 @@ class PipelineStateAnalyzer:
                 "chunk_utilization_rate": chunk_utilization_rate,
                 "chunks_used": len(used_chunk_ids),
                 "chunks_retrieved": len(retrieved_chunk_ids),
+                "supported_claim_fraction": sum(v.verification_status == VerificationStatus.SUPPORTED for v in verification.results) / len(verification.results)
+                    if verification.results else None,
+                "coverage_scope": "extracted answer claims",
             }
         ))
         
@@ -204,6 +214,7 @@ class PipelineStateAnalyzer:
         ]
         chunk_ref_by_id = {ref["chunk_id"]: ref for ref in trace.retrieved_chunk_references}
         boundary_claim_ids = []
+        suspected_boundary_ids = []
         for v in partially_supported:
             ref = chunk_ref_by_id.get(v.best_chunk_id)
             if not ref or ref.get("chunk_index") is None or not ref.get("parent_document_id"):
@@ -213,16 +224,19 @@ class PipelineStateAnalyzer:
                         and other.get("parent_document_id") == ref["parent_document_id"]
                         and other.get("chunk_index") is not None
                         and abs(other["chunk_index"] - ref["chunk_index"]) == 1):
-                    boundary_claim_ids.append(v.claim_id)
-                    break
+                    suspected_boundary_ids.append(v.claim_id)
+                    check = v.boundary_check or {}
+                    if check.get("confirmed") and set(check.get("chunk_ids", [])) == {ref["chunk_id"], other["chunk_id"]}:
+                        boundary_claim_ids.append(v.claim_id)
+                        break
 
-        if boundary_claim_ids:
-            chunking_status = PipelineStatus.FAIL
+        if suspected_boundary_ids:
+            chunking_status = PipelineStatus.FAIL if boundary_claim_ids else PipelineStatus.UNKNOWN
             chunking_obs = (
-                f"{len(boundary_claim_ids)} partially supported claim(s) have best evidence adjacent "
-                f"to another retrieved chunk from the same document."
+                f"Combined adjacent passages support {len(boundary_claim_ids)} claim(s) that neither passage supports alone."
+                if boundary_claim_ids else "Adjacent passages were observed, but a chunk-boundary explanation is unconfirmed."
             )
-            chunking_conf = 0.8
+            chunking_conf = 0.8 if boundary_claim_ids else 0.5
             
             states.append(PipelineState(
                 stage=PipelineStage.CHUNKING,
@@ -232,7 +246,8 @@ class PipelineStateAnalyzer:
                 supporting_claim_ids=boundary_claim_ids,
                 supporting_chunk_ids=[],
                 supporting_verification_ids=[],
-                metadata={"boundary_claim_ids": boundary_claim_ids}
+                metadata={"boundary_claim_ids": boundary_claim_ids,
+                          "suspected_boundary_claim_ids": list(dict.fromkeys(suspected_boundary_ids))}
             ))
         
         # 4. Generator
@@ -289,9 +304,11 @@ class PipelineStateAnalyzer:
             grounding_status = PipelineStatus.FAIL
             grounding_obs = f"{len(contradicted_verifications)} claim(s) are actively contradicted by retrieved evidence."
             grounding_conf = 0.95
-        elif len(verification.results) == 0:
+        elif not verification.results or any(
+            v.verification_status == VerificationStatus.NOT_VERIFIABLE for v in verification.results
+        ):
             grounding_status = PipelineStatus.UNKNOWN
-            grounding_obs = "No claims were available to assess grounding."
+            grounding_obs = "Grounding is unmeasured for one or more claims."
             grounding_conf = 0.5
         else:
             grounding_status = PipelineStatus.PASS

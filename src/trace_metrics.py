@@ -80,6 +80,9 @@ def _rebuild_chunks(trace: RAGTrace) -> list:
     """RetrievedChunks with real text, resolved against BOTH corpus registries
     (the trace doesn't record which corpus it ran against; chunk ids are
     per-ingestion UUIDs, so a collision is not realistic)."""
+    captured = ClaimVerifier.build_retrieved_chunks_from_trace(trace, None)
+    if len(captured) == len(trace.retrieved_chunk_references):
+        return captured
     for corpus in chat_service.CORPORA:
         registry = chat_service.load_registry(corpus)
         if registry is None:
@@ -87,7 +90,7 @@ def _rebuild_chunks(trace: RAGTrace) -> list:
         chunks = ClaimVerifier.build_retrieved_chunks_from_trace(trace, registry)
         if chunks:
             return chunks
-    return []
+    return captured
 
 
 def _summary_from_stored_payload(trace_json: Dict[str, Any]) -> Optional[VerificationSummary]:
@@ -165,22 +168,17 @@ def compute_framework_panel(trace_id: str) -> Optional[Dict[str, Any]]:
     # Claim verification: reuse what the live turn persisted, else run the
     # same deep analysis now and persist it back (computed once, cached once).
     computed_claims = False
+    analysis_error = None
     summary = _summary_from_stored_payload(trace_json)
     if summary is None:
-        # Rehydrate the turn's memory evidence (recorded in diagnostics by
-        # chat_service) so on-demand verification sees the same evidence pool
-        # the live path would have used.
-        mem_ids = (trace_json.get("diagnostics") or {}).get("memory_ids") or []
-        evidence = chunks
-        if mem_ids:
-            try:
-                mm = chat_service.get_memory_manager()
-                evidence = chunks + chat_service.memory_evidence_chunks(
-                    mm.get_memories(mem_ids))
-            except Exception as exc:
-                logger.warning("Could not rehydrate memory evidence for %s: %s", trace_id, exc)
-        outcome = chat_service.deep_analyze(trace, evidence)
+        try:
+            evidence = chunks + chat_service.captured_memory_chunks(trace)
+        except ValueError as exc:
+            outcome = {"error": str(exc)}
+        else:
+            outcome = chat_service.deep_analyze(trace, evidence)
         if "error" in outcome:
+            analysis_error = outcome["error"]
             logger.warning("On-demand deep analysis failed for %s: %s", trace_id, outcome["error"])
             summary = None
         else:
@@ -215,7 +213,8 @@ def compute_framework_panel(trace_id: str) -> Optional[Dict[str, Any]]:
 
     out = {
         "trace_id": trace_id,
-        "note": PANEL_NOTE,
+        "note": PANEL_NOTE + (f" Claim verification unavailable: {analysis_error}" if analysis_error else ""),
+        "analysis_error": analysis_error,
         "families": ordered,
         "verification": _summary_to_dict(summary) if summary else None,
         "computed_claims": computed_claims,

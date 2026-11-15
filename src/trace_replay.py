@@ -231,6 +231,7 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
     if (source.diagnostics or {}).get("memory_ids") and not memory_evidence:
         warnings.append("Original memory remains in the captured prompt, but legacy memory evidence is unavailable for verification.")
     trace.diagnostics["memory_evidence"] = memory_evidence
+    trace.diagnostics["memory_ids"] = (source.diagnostics or {}).get("memory_ids", [])
     if regression_case is not None:
         trace.diagnostics["regression_case"] = deepcopy(regression_case)
     trace.diagnostics["replay"] = {
@@ -242,7 +243,12 @@ def replay_trace(source: RAGTrace, options: ReplayOptions, *, regression_case=No
     if options.verify_claims:
         if progress:
             progress("verifying claims")
-        outcome = chat_service.deep_analyze(trace, chunks + [RetrievedChunk(**v) for v in memory_evidence])
+        try:
+            verification_evidence = chunks + chat_service.captured_memory_chunks(trace)
+        except ValueError as exc:
+            outcome = {"error": str(exc)}
+        else:
+            outcome = chat_service.deep_analyze(trace, verification_evidence)
         trace.diagnostics["claim_error" if "error" in outcome else "claim_verification"] = (
             outcome.get("error") if "error" in outcome else outcome["verification"])
     trace.execution_statistics["replay_total_time"] = time.perf_counter() - started

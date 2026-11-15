@@ -427,7 +427,7 @@ class MemoryStore:
             return 0
         except Exception as e:
             logger.error("Failed to clear session memory: %s", e)
-            return 0
+            raise
 
     @_locked
     def clear_all_memory(self) -> int:
@@ -508,10 +508,13 @@ class MemoryStore:
     def delete_session(self, session_id: str) -> bool:
         """Delete a session and its memories."""
         if session_id in self._sessions:
-            del self._sessions[session_id]
-            self._persist_sessions()
-            # Also clear memories for this session
             self.clear_session_memory(session_id)
+            session = self._sessions.pop(session_id)
+            try:
+                self._persist_sessions()
+            except Exception:
+                self._sessions[session_id] = session
+                raise
             mem_logger.info("Session deleted: %s", session_id)
             return True
         return False

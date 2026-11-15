@@ -201,6 +201,26 @@ class TestMemoryStoreSession(unittest.TestCase):
         self.assertTrue(self.store.delete_session("s1"))
         self.assertIsNone(self.store.get_session("s1"))
 
+    def test_failed_memory_deletion_keeps_session_visible_and_retryable(self):
+        self.store.save_session(SessionInfo(session_id="s1", title="Keep until deleted"))
+        entry = MemoryEntry(memory_id="retained", session_id="s1", question="Question", answer="Answer")
+        self.store.save_memory(entry)
+        with patch.object(self.store._collection, "delete", side_effect=OSError("Database unavailable")):
+            with self.assertRaises(OSError):
+                self.store.delete_session("s1")
+        self.assertIsNotNone(self.store.get_session("s1"))
+        self.assertIsNotNone(self.store.get_memory("retained"))
+        self.assertTrue(self.store.delete_session("s1"))
+        self.assertIsNone(self.store.get_memory("retained"))
+
+    def test_failed_metadata_write_restores_session_for_retry(self):
+        self.store.save_session(SessionInfo(session_id="s1", title="Retry"))
+        with patch.object(self.store, "_persist_sessions", side_effect=OSError("Disk unavailable")):
+            with self.assertRaises(OSError):
+                self.store.delete_session("s1")
+        self.assertIsNotNone(self.store.get_session("s1"))
+        self.assertTrue(self.store.delete_session("s1"))
+
     def test_rename_session(self):
         self.store.save_session(SessionInfo(session_id="s1", title="Old Name"))
         self.assertTrue(self.store.rename_session("s1", "New Name"))

@@ -92,6 +92,9 @@ def test_empty_evidence_is_unverifiable():
     assert result["verification"]["unsupported_claims"] == 0
     assert result["verification"]["not_verifiable_claims"] == 1
     assert result["diagnostic_report"]["analysis_status"] == "PARTIAL_ANALYSIS"
+    stages = result["diagnostic_report"]["pipeline_overview"]["pipeline_stages"]
+    assert next(s for s in stages if s["stage"] == "GROUNDING")["status"] == "UNKNOWN"
+    assert "GROUNDING is healthy" not in result["diagnostic_report"]["overall_assessment"]["major_strength"]
 
 
 def test_llm_mode_disables_debug_artifact_writes(monkeypatch):

@@ -48,25 +48,27 @@ export default function Overview({ sessionCount, onNavigate }: OverviewProps) {
 
   return (
     <div className="overview-page">
-      <span className="tag tag-outline">Diagnostic framework</span>
-      <h1 className="overview-title">Inspect how X-RAG answers, not just what it answers.</h1>
+      <h1 className="overview-title">Ask a question. Explore the evidence.</h1>
       <p className="overview-lede">
-        {config ? `${config.arms.length} retrieval strategies` : "Retrieval strategies"}, one interface. Trace every answer back to its chunks, its
-        recalled memories, and its timing — across the statutes and judgments corpora.
+        Search statutes and judgments, then inspect the source passages, recalled memories and retrieval steps behind each answer.
       </p>
+      <div className="overview-actions">
+        <button className="btn btn-primary" onClick={() => onNavigate("chat")}>Open chat</button>
+        <button className="btn" onClick={() => onNavigate("experiments")}>Research dashboard</button>
+      </div>
 
       <div className="overview-cards">
         {CARDS.map((c) => (
-          <div role="button" tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") onNavigate(c.tab); }} key={c.tab} className="overview-card blueprint" onClick={() => onNavigate(c.tab)}>
+          <button key={c.tab} className="overview-card blueprint" onClick={() => onNavigate(c.tab)}>
             <i className="corner tl" /><i className="corner tr" />
             <i className="corner bl" /><i className="corner br" />
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-700)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               {c.icon}
             </svg>
-            <div className="card-title">{c.title}</div>
-            <p className="card-body">{c.desc}</p>
+            <span className="card-title">{c.title}</span>
+            <span className="card-body">{c.desc}</span>
             <span className="overview-card-open">Open →</span>
-          </div>
+          </button>
         ))}
       </div>
 

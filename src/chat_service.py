@@ -29,6 +29,8 @@ if PROJECT_ROOT not in sys.path:
 from src.device import describe_device
 from src.memory.memory_manager import MemoryManager
 from src.cache_utils import serialized_cache
+from src.rag_trace import TRACE_WRITE_LOCK
+from src.memory.memory_utils import save_json
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +229,7 @@ def deep_analyze(trace, retrieved_chunks) -> Dict[str, Any]:
                         "best_chunk_rank": vr.best_chunk_rank,
                         "evidence_text": vr.evidence_text,
                         "verified_by": vr.verified_by,
+                        "boundary_check": vr.boundary_check,
                     }
                     for vr in verification.results
                 ],
@@ -264,6 +267,19 @@ def memory_evidence_chunks(entries: List[Any]) -> List[Any]:
     return out
 
 
+def captured_memory_chunks(trace):
+    """Recover the exact memory passages recorded at generation time."""
+    from src.retriever import RetrievedChunk
+
+    diagnostics = trace.diagnostics or {}
+    chunks = [RetrievedChunk(**value) for value in diagnostics.get("memory_evidence", [])]
+    captured_ids = {chunk.chunk_id for chunk in chunks}
+    expected_ids = {f"memory:{memory_id}" for memory_id in diagnostics.get("memory_ids", [])}
+    if not expected_ids.issubset(captured_ids):
+        raise ValueError("Historical memory evidence was not captured; claim verification is unavailable.")
+    return chunks
+
+
 def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> bool:
     """Write claim results back into the saved trace JSON.
 
@@ -277,18 +293,18 @@ def persist_deep_analysis(trace_path: str, outcome: Dict[str, Any]) -> bool:
     if "verification" not in outcome and "error" not in outcome:
         return False
     try:
-        with open(trace_path, "r", encoding="utf-8") as f:
-            trace_json = json.load(f)
-        trace_json["diagnostics"] = trace_json.get("diagnostics") or {}
-        if "verification" in outcome:
-            trace_json.setdefault("diagnostics", {})["claim_verification"] = outcome["verification"]
-            trace_json.pop("claim_verification", None)
-            trace_json.pop("claim_error", None)
-            trace_json["diagnostics"].pop("claim_error", None)
-        if "error" in outcome:
-            trace_json.setdefault("diagnostics", {})["claim_error"] = outcome["error"]
-        with open(trace_path, "w", encoding="utf-8") as f:
-            json.dump(trace_json, f, indent=2)
+        with TRACE_WRITE_LOCK:
+            with open(trace_path, "r", encoding="utf-8") as f:
+                trace_json = json.load(f)
+            trace_json["diagnostics"] = trace_json.get("diagnostics") or {}
+            if "verification" in outcome:
+                trace_json["diagnostics"]["claim_verification"] = outcome["verification"]
+                trace_json.pop("claim_verification", None)
+                trace_json.pop("claim_error", None)
+                trace_json["diagnostics"].pop("claim_error", None)
+            if "error" in outcome:
+                trace_json["diagnostics"]["claim_error"] = outcome["error"]
+            save_json(trace_json, trace_path)
         return True
     except Exception:
         logger.exception("Diagnostic persistence failed for %s", trace_path)
@@ -574,8 +590,7 @@ def _run_chat_turn(
         # 30-115s/claim cost on CPU as the Streamlit path, so gated identically.
         # Recalled memories join the evidence pool (marked memory:<id>) so a
         # claim grounded in memory isn't misdiagnosed as unsupported.
-        evidence = retrieval_result.retrieved_chunks + memory_evidence_chunks(
-            [r.memory for r in memory_results])
+        evidence = retrieval_result.retrieved_chunks + captured_memory_chunks(trace)
         outcome = deep_analyze(trace, evidence)
         if "error" in outcome:
             strategy_event["claim_error"] = outcome["error"]

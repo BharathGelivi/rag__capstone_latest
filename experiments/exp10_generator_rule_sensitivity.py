@@ -71,7 +71,6 @@ from experiments.common import (
     wilson_interval,
 )
 from experiments.exp05_diagnostic_agreement import load_real_rows
-from experiments.exp08_live_diagnostic_accuracy import _ground_truth_cause
 from experiments.faults import ALL_FAULTS, FaultType, build_case, diagnose
 from src.claim_verifier import VerificationResult, VerificationStatus, VerificationSummary
 from src.pipeline_state_analyzer import PipelineStateAnalyzer
@@ -215,7 +214,8 @@ class GeneratorRuleSensitivityExperiment(Experiment):
 
         row = payload["row"]
         trace_id = row.get("trace_id")
-        expected = _ground_truth_cause(row)
+        # E10's saved comparison uses the dataset's scenario expectation.
+        expected = (row.get("expected_failure_type") or "").strip() or FailureType.UNKNOWN.value
         trace = _load_trace(trace_id) if trace_id else None
         verification = _reconstruct_verification(trace_id) if trace_id else None
 

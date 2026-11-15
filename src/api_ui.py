@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import glob
 import json
+import logging
 import os
 import sys
 import re
@@ -25,6 +26,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src import chat_service
+from src.research_dashboard import experiment_directory, research_summary
 from src.device import describe_device
 from src.memory_graph import build_memory_graph_data
 from src.trace_metrics import compute_framework_panel
@@ -58,7 +60,7 @@ class ChatRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_options(self):
-        from experiments.exp06_strategy_ablation import ARMS
+        from src.strategy_arms import ARMS
         if not self.question.strip():
             raise ValueError("question must not be blank")
         if self.corpus not in chat_service.CORPUS_OPTIONS or self.arm not in ARMS:
@@ -196,7 +198,12 @@ def get_session_messages(session_id: str):
 @app.delete("/ui/sessions/{session_id}")
 def delete_session(session_id: str):
     mm = chat_service.get_memory_manager()
-    if not mm.delete_session(session_id):
+    try:
+        deleted = mm.delete_session(session_id)
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Session deletion failed")
+        raise HTTPException(503, "Session deletion could not complete. Please retry.") from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"deleted": session_id}
 
@@ -280,6 +287,8 @@ def get_trace(trace_id: str):
         corpus = (trace.get("configuration_snapshot") or {}).get("corpus")
         corpora = [corpus] if corpus in chat_service.CORPORA else chat_service.CORPORA
         for corpus in corpora:
+            if all(ref.get("text") for ref in refs):
+                break
             registry = chat_service.load_registry(corpus)
             if registry is None:
                 continue
@@ -304,6 +313,8 @@ def trace_metrics(trace_id: str):
     with deep analysis. Results are cached per trace id -- each call after
     the first is free.
     """
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trace_id):
+        raise HTTPException(422, "Invalid trace identifier")
     panel = compute_framework_panel(trace_id)
     if panel is None:
         raise HTTPException(status_code=404, detail="Trace not found")
@@ -387,10 +398,9 @@ def evidence_debugger(trace_id: str):
 @app.post("/ui/trace/{trace_id}/evidence/analyze")
 def analyze_evidence(trace_id: str):
     from src.trace_replay import captured_chunks
-    from src.retriever import RetrievedChunk
     try:
         trace = load_trace(trace_id)
-        memory = [RetrievedChunk(**v) for v in (trace.diagnostics or {}).get("memory_evidence", [])]
+        memory = chat_service.captured_memory_chunks(trace)
         outcome = chat_service.deep_analyze(trace, captured_chunks(trace) + memory)
         if "error" in outcome:
             raise HTTPException(502, outcome["error"])
@@ -513,21 +523,32 @@ def list_experiment_runs(source: str = "active"):
     monitor = None
     monitor_path = os.path.join(base_dir, "monitor.json")
     if os.path.isfile(monitor_path):
-        with open(monitor_path, encoding="utf-8-sig") as handle:
-            monitor = json.load(handle)
+        try:
+            with open(monitor_path, encoding="utf-8-sig") as handle:
+                monitor = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            monitor = {"status": "unreadable"}
+            logging.getLogger(__name__).warning("Experiment monitor could not be read")
     return {"run": run, "experiments": statuses, "monitor": monitor}
 
 
 def _experiment_directory(source: str):
-    base_dir = os.path.join(PROJECT_ROOT, "artifacts", "experiments")
-    pointer = os.path.join(base_dir, "active_run.json")
-    if source == "active" and os.path.isfile(pointer):
-        with open(pointer, encoding="utf-8") as handle:
-            run_id = json.load(handle)["run_id"]
-        if not isinstance(run_id, str) or not run_id.startswith("run40_") or not all(c.isalnum() or c == "_" for c in run_id):
-            raise HTTPException(status_code=500, detail="Invalid active run")
-        return os.path.join(base_dir, "runs", run_id)
-    return base_dir
+    try:
+        return str(experiment_directory(PROJECT_ROOT, source))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/ui/research-summary")
+def get_research_summary(source: str = "active"):
+    try:
+        return research_summary(PROJECT_ROOT, source)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @app.get("/ui/experiments/{key}")

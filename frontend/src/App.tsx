@@ -54,6 +54,7 @@ const NAV: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
 export default function App() {
   const [device, setDevice] = useState("Unavailable");
   const [error, setError] = useState("");
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("overview");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -65,6 +66,7 @@ export default function App() {
     try {
       const list = await getSessions();
       setSessions(list);
+      setError("");
       setActiveSessionId(current => current || list[0]?.session_id || null);
     } catch (e) {
       console.error("Failed to load sessions:", e);
@@ -83,6 +85,8 @@ export default function App() {
       setSessions((prev) => [newSession, ...prev]);
       setActiveSessionId(newSession.session_id);
       setTab("chat");
+      setSessionsOpen(false);
+      setError("");
     } catch (e) {
       console.error("Failed to create session:", e);
       setError("Unable to create session");
@@ -108,10 +112,10 @@ export default function App() {
     <div className="app">
       {/* ── Sidebar ─────────────────────────────── */}
       <aside className="sidebar">
-        <div role="button" tabIndex={0} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") setTab("overview"); }} className="sidebar-header" style={{ cursor: "pointer" }} onClick={() => setTab("overview")}>
+        <button className="sidebar-header" onClick={() => setTab("overview")} aria-label="X-RAG overview">
           <span className="sidebar-logo">X-RAG</span>
           <span className="sidebar-tagline">Diagnostic</span>
-        </div>
+        </button>
 
         <button className="sidebar-new-btn" onClick={handleNewChat}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -120,24 +124,33 @@ export default function App() {
           New session
         </button>
 
-        <span className="sidebar-section-label">Sessions</span>
-        <div className="sidebar-sessions-list">
+        <button className="mobile-sessions-toggle" aria-expanded={sessionsOpen} aria-controls="session-list" onClick={() => setSessionsOpen(open => !open)}>
+          Sessions ({sessions.length})
+        </button>
+        <span className="sidebar-section-label sessions-label">Sessions</span>
+        <div id="session-list" className={`sidebar-sessions-list ${sessionsOpen ? "mobile-open" : ""}`}>
+          {sessions.length === 0 && <p className="sessions-empty">Your conversations will appear here.</p>}
           {sessions.map((s) => (
             <div
-              role="button" tabIndex={0}
-              onKeyDown={e => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); setActiveSessionId(s.session_id); setTab("chat"); } }}
               key={s.session_id}
               className={`sidebar-session-item ${activeSessionId === s.session_id && tab === "chat" ? "active" : ""}`}
-              onClick={() => {
-                setActiveSessionId(s.session_id);
-                setTab("chat");
-              }}
             >
-              <span className="sidebar-session-title">{s.title || "Untitled Chat"}</span>
+              <button
+                className="sidebar-session-open"
+                aria-current={activeSessionId === s.session_id && tab === "chat" ? "page" : undefined}
+                onClick={() => {
+                  setActiveSessionId(s.session_id);
+                  setTab("chat");
+                  setSessionsOpen(false);
+                }}
+              >
+                <span className="sidebar-session-title" title={s.title || "Untitled Chat"}>{s.title || "Untitled Chat"}</span>
+              </button>
               <button
                 className="sidebar-session-delete"
                 onClick={(e) => handleDeleteSession(e, s.session_id)}
                 title="Delete session"
+                aria-label={`Delete session ${s.title || "Untitled Chat"}`}
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
@@ -147,12 +160,14 @@ export default function App() {
           ))}
         </div>
 
-        <span className="sidebar-section-label">Views</span>
+        <span className="sidebar-section-label views-label">Views</span>
+        <nav className="sidebar-navigation" aria-label="Main navigation">
         {NAV.map((n) => (
           <button
             key={n.id}
             className={`sidebar-nav-item ${tab === n.id ? "active" : ""}`}
-            onClick={() => setTab(n.id)}
+            aria-current={tab === n.id ? "page" : undefined}
+            onClick={() => { setTab(n.id); setSessionsOpen(false); }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               {n.icon}
@@ -160,6 +175,7 @@ export default function App() {
             {n.label}
           </button>
         ))}
+        </nav>
 
         <div className="sidebar-footer">
           Device: <span>{device}</span>
@@ -168,7 +184,7 @@ export default function App() {
 
       {/* ── Main content ────────────────────────── */}
       <div className="main">
-        {error && <p role="alert">{error}</p>}
+        {error && <div className="connection-notice" role="alert"><span>{error}. Check that the API is running.</span><button className="btn" onClick={() => void loadSessions()}>Retry sessions</button></div>}
         {tab === "overview" && <Overview sessionCount={sessions.length} onNavigate={setTab} />}
         {tab === "chat" && (
           <Chat

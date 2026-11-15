@@ -28,6 +28,8 @@ window.fetch = async (url, init) => {
     emit({event:"chunks", chunks:[{chunk_id:"c1", source_file:"fixture.pdf", page_number:1,
           similarity_score:0.8, text:"Fixture evidence"}], retrieval_time:0.01});
     emit({event:"token", text:"Fixture answer"});
+    if (window.__chatEvaluation) emit({event:"evaluation", ...window.__chatEvaluation});
+    if (window.__chatVerification) emit({event:"strategy", trace_id:"fixture", verification:window.__chatVerification});
     if (mode === "hold") {
       init.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
       return;
@@ -89,6 +91,27 @@ class TestUIEndToEnd(unittest.TestCase):
         self.page.get_by_role("button", name="Details").click()
         self.assertIn("Fixture evidence", self.page.locator(".chunk-card").inner_text())
         self.assertEqual(self.page.evaluate("window.__chatRequests.length"), 1)
+
+    def test_lexical_score_is_identified_as_word_overlap(self):
+        self.open_chat()
+        self.page.evaluate("window.__chatEvaluation={groundedness:1.0}")
+        self.send()
+        self.page.get_by_text("Word overlap: 100%", exact=True).wait_for()
+        self.assertNotIn("Grounded: 100%", self.page.locator(".details-root").inner_text())
+        self.page.get_by_role("button", name="Details").click()
+        self.page.get_by_role("button", name="Evaluation", exact=False).click()
+        self.assertIn("Matching words can include wrong numbers", self.page.locator(".eval-grid").inner_text())
+
+    def test_uncertain_claims_never_show_clean_badge(self):
+        self.open_chat()
+        self.page.evaluate("""window.__chatVerification={claim_count:2,results:[
+            {claim_id:'unknown',claim_text:'Unknown claim',status:'NOT_VERIFIABLE'},
+            {claim_id:'partial',claim_text:'Partial claim',status:'PARTIALLY_SUPPORTED'}]}""")
+        self.send()
+        self.page.get_by_text("1 unverifiable", exact=True).wait_for()
+        self.assertIn("1 partially supported", self.page.locator(".details-pills").inner_text())
+        self.assertNotIn("claims clean", self.page.locator(".details-pills").inner_text())
+        self.assertNotIn("All claims supported", self.page.locator(".details-pills").inner_text())
 
     def test_session_switch_cancels_previous_turn(self):
         self.open_chat(); self.page.evaluate("window.__chatMode='hold'"); self.send()

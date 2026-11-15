@@ -372,27 +372,32 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
   const shakyClaims = (meta.claims ?? []).filter(
     (c) => c.status === "UNSUPPORTED" || c.status === "CONTRADICTED"
   ).length;
+  const partialClaims = (meta.claims ?? []).filter(c => c.status === "PARTIALLY_SUPPORTED").length;
+  const unverifiableClaims = (meta.claims ?? []).filter(c => c.status === "NOT_VERIFIABLE").length;
 
   return (
     <div className="details-root">
-      <button className="details-toggle" onClick={() => setOpen(o => !o)}>
+      <button className="details-toggle" aria-expanded={open} onClick={() => setOpen(o => !o)}>
         <span className="details-toggle-icon">{open ? "▾" : "▸"}</span>
-        <span>Details</span>
+        <span>Sources & analysis</span>
         <span className="details-pills">
           {chunkCount > 0 && <span className="dpill">📄 {chunkCount}</span>}
           {meta.groundedness != null && (
-            <span className="dpill accent">🎯 Grounded: {(meta.groundedness * 100).toFixed(0)}%</span>
+            <span className="dpill">Word overlap: {(meta.groundedness * 100).toFixed(0)}%</span>
           )}
           {meta.faithfulness != null && (
-            <span className="dpill accent">🛡️ Faithful: {(meta.faithfulness * 100).toFixed(0)}%</span>
+            <span className="dpill accent">Supported claims: {(meta.faithfulness * 100).toFixed(0)}%</span>
           )}
           {memCount > 0 && <span className="dpill">🧠 {memCount}</span>}
           {hasClaimData && <span className="dpill">🔎 {claimCount} claim{claimCount === 1 ? "" : "s"}</span>}
-          {meta.claims !== undefined && claimCount > 0 && (
-            shakyClaims > 0
-              ? <span className="dpill" style={{ color: "#ef4444" }}>⚠ {shakyClaims} shaky</span>
-              : <span className="dpill" style={{ color: "#10a37f" }}>✓ claims clean</span>
-          )}
+          {meta.claims !== undefined && claimCount > 0 && <>
+            {shakyClaims > 0 && <span className="dpill" style={{ color: "#ef4444" }}>⚠ {shakyClaims} shaky</span>}
+            {partialClaims > 0 && <span className="dpill">{partialClaims} partially supported</span>}
+            {unverifiableClaims > 0 && <span className="dpill">{unverifiableClaims} unverifiable</span>}
+            {meta.claims.every(c => c.status === "SUPPORTED") && (
+              <span className="dpill" style={{ color: "#10a37f" }}>All claims supported</span>
+            )}
+          </>}
           {meta.total_time != null && <span className="dpill">⏱ {fmt(meta.total_time)}</span>}
           {meta.device && <span className="dpill" style={{ color: "#10a37f", fontWeight: 500 }}>⚡ {{ CPU: "CPU", MPS: "MPS" }[meta.device] ?? meta.device}</span>}
         </span>
@@ -414,6 +419,7 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
               <button
                 key={t}
                 className={`details-tab ${tab === t ? "active" : ""}`}
+                aria-pressed={tab === t}
                 onClick={() => setTab(t)}
               >{label}</button>
             ))}
@@ -537,10 +543,10 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
             <div className="details-content">
               <div className="eval-grid">
                 {([
-                  { label: "Groundedness", value: meta.groundedness,
-                    desc: "Fraction of answer sentences directly grounded in retrieved context (hallucination-free)." },
-                  { label: "Faithfulness", value: meta.faithfulness,
-                    desc: "Factual consistency of claims vs retrieved source evidence." },
+                  { label: "Word overlap", value: meta.groundedness,
+                    desc: "Lexical overlap with retrieved text. Matching words can include wrong numbers or negated facts." },
+                  { label: "Claim support", value: meta.faithfulness,
+                    desc: "Share of extracted claims classified as supported by the verifier against the supplied evidence." },
                   { label: "Answer Relevancy", value: meta.answer_relevancy,
                     desc: "Semantic cosine alignment between user question and generated answer." },
                   { label: "Context Precision", value: meta.context_precision,
@@ -556,7 +562,7 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
                         which is metrics-dressing. "—" is the honest display. */}
                     <div
                       className="eval-value"
-                      style={card.value != null ? { color: card.value >= 0.8 ? "#10a37f" : "#f59e0b" } : {}}
+                      style={card.value != null && card.label !== "Word overlap" ? { color: card.value >= 0.8 ? "#10a37f" : "#f59e0b" } : {}}
                     >
                       {card.value != null ? `${(card.value * 100).toFixed(0)}%` : "—"}
                     </div>
@@ -749,6 +755,7 @@ function ActionBar({
 /* ─── Chat ───────────────────────────────────────────────── */
 export default function Chat({ activeSessionId, onSessionCreated, onSessionRenamed, settings, onTurnDone }: ChatProps) {
   const [config, setConfig] = useState<Config | null>(null);
+  const [configError, setConfigError] = useState(false);
   const [arm, setArm] = useState("C_hybrid_rerank");
   const [corpus, setCorpus] = useState("statutes");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -762,11 +769,19 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
   const requestSessionRef = useRef<string | null>(null);
   const reasoningStartRef = useRef<number | null>(null);
 
-  useEffect(() => {
-    getConfig().then((c) => {
+  async function loadConfig() {
+    try {
+      const c = await getConfig();
       setConfig(c);
+      setConfigError(false);
       if (c.arms.length) setArm((prev) => (c.arms.includes(prev) ? prev : c.arms[0]));
-    });
+    } catch {
+      setConfigError(true);
+    }
+  }
+
+  useEffect(() => {
+    void Promise.resolve().then(loadConfig);
   }, []);
 
   // "both" has no graph/IRCoT analogue -- it merges two independently
@@ -1029,43 +1044,56 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
     <div className="chat-page">
       {/* ── Top bar ─────────────────────────────── */}
       <div className="topbar">
-        <span className="topbar-title">{CORPUS_LABELS[corpus] ?? corpus}</span>
+        <span className="topbar-title">Chat</span>
         <div className="topbar-controls">
+          <label className="chat-setting">
+            Retrieval strategy
           <select
+            aria-label="Retrieval strategy"
             className="topbar-select"
             value={arm}
             onChange={(e) => setArm(e.target.value)}
-            disabled={corpus === "both"}
+            disabled={!config || busy || corpus === "both"}
             title={
               corpus === "both"
                 ? "Combined mode always uses hybrid + rerank -- graph/IRCoT arms are built on the judgments-only citation graph"
                 : `Retrieval strategy: ${ARM_DESCRIPTIONS[arm] ?? arm}`
             }
           >
+            {!config && <option value={arm}>{configError ? "Unavailable" : "Loading strategies…"}</option>}
             {config?.arms_by_corpus[corpus]?.map((a) => (
-              <option key={a} value={a} title={ARM_DESCRIPTIONS[a]}>{a}</option>
+              <option key={a} value={a} title={a}>{ARM_DESCRIPTIONS[a] ?? a}</option>
             ))}
           </select>
+          </label>
+          <label className="chat-setting">
+            Document collection
           <select
+            aria-label="Document collection"
             className="topbar-select"
             value={corpus}
+            disabled={!config || busy}
             onChange={(e) => setCorpus(e.target.value)}
             title="Which ingested document corpus to answer from"
           >
+            {!config && <option value={corpus}>{configError ? "Unavailable" : "Loading collections…"}</option>}
             {config?.corpora.map((c) => (
               <option key={c} value={c}>{CORPUS_LABELS[c] ?? c}</option>
             ))}
           </select>
+          </label>
         </div>
       </div>
+      {configError && <div className="connection-notice" role="alert"><span>Cannot load retrieval settings. Check that the API is running.</span><button className="btn" onClick={() => void loadConfig()}>Retry settings</button></div>}
 
       {/* ── Welcome / Messages ──────────────────── */}
       {isEmpty ? (
         <div className="chat-welcome">
-          <h1>What can I help with?</h1>
+          <h1>What would you like to research?</h1>
+          <p className="chat-welcome-note">Choose a collection above, then write a question or edit an example below.</p>
           <div className="suggestions">
             {SUGGESTIONS.map((s) => (
-              <button key={s} className="suggestion-chip" onClick={() => send(s)}>{s}</button>
+              <button key={s} className="suggestion-chip" onClick={() => { setInput(s); textareaRef.current?.focus(); }}>{s}</button>
             ))}
           </div>
         </div>
@@ -1142,13 +1170,14 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
               ref={textareaRef}
               className="input-textarea"
               aria-label="Question"
+              aria-describedby="question-hint"
               rows={1}
               value={input}
               onChange={handleInput}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (config) void send(); }
               }}
-              placeholder="Ask anything about the statutes…"
+              placeholder={corpus === "judgments" ? "Ask about Supreme Court judgments…" : corpus === "both" ? "Ask about statutes and judgments…" : "Ask about the statutes…"}
               disabled={busy}
             />
             {busy ? (
@@ -1158,14 +1187,14 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
                 </svg>
               </button>
             ) : (
-              <button className="send-btn" aria-label="Send message" onClick={() => send()} disabled={!input.trim()}>
+              <button className="send-btn" aria-label="Send message" onClick={() => send()} disabled={!input.trim() || !config}>
                 <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                   <path d="M12 4l8 8h-5v8H9v-8H4z" />
                 </svg>
               </button>
             )}
           </div>
-          <div className="input-hint">X-RAG may make mistakes. Verify important legal information.</div>
+          <div id="question-hint" className="input-hint">Enter to send · Shift + Enter for a new line. Verify important legal information.</div>
         </div>
       </div>
     </div>

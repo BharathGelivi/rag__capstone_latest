@@ -121,6 +121,7 @@ class VerificationResult:
     verification_model: str = VERIFICATION_MODEL
     # "nli" (fast path) or "llm" (escalated -- see AMBIGUOUS_STATUSES).
     verified_by: str = "nli"
+    boundary_check: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -611,6 +612,25 @@ class ClaimVerifier:
             summary.not_verifiable_claims = sum(r.verification_status == VerificationStatus.NOT_VERIFIABLE for r in summary.results)
         return summary
 
+    def check_chunk_boundary(self, result, chunks):
+        """Confirm that joining adjacent passages resolves a partial claim."""
+        anchor = next((c for c in chunks if c.chunk_id == result.best_chunk_id), None)
+        if anchor is None or not anchor.parent_document_id or anchor.chunk_index < 0:
+            return None
+        neighbors = [c for c in chunks if c.chunk_id != anchor.chunk_id
+                     and c.parent_document_id == anchor.parent_document_id
+                     and c.chunk_index >= 0 and abs(c.chunk_index - anchor.chunk_index) == 1]
+        for neighbor in neighbors:
+            pair = sorted([anchor, neighbor], key=lambda c: c.chunk_index)
+            individual = [self.run_nli(c.chunk_text, result.claim_text)["entailment"] for c in pair]
+            if max(individual) >= ENTAILMENT_THRESHOLD:
+                continue
+            combined = self.run_nli("\n".join(c.chunk_text for c in pair), result.claim_text)["entailment"]
+            if combined >= ENTAILMENT_THRESHOLD:
+                return {"confirmed": True, "chunk_ids": [c.chunk_id for c in pair],
+                        "individual_entailment": individual, "combined_entailment": combined}
+        return None
+
     def verify_all(self, claim_set: CandidateClaimSet, trace_id: str, retrieved_chunks: List[RetrievedChunk]) -> VerificationSummary:
         """Verifies all claims in a CandidateClaimSet."""
         t_start = time.time()
@@ -619,6 +639,11 @@ class ClaimVerifier:
         results = []
         for claim in claim_set.candidate_claims:
             res = self.verify_claim(claim, retrieved_chunks)
+            if res.verification_status == VerificationStatus.PARTIALLY_SUPPORTED:
+                try:
+                    res.boundary_check = self.check_chunk_boundary(res, retrieved_chunks)
+                except Exception:
+                    logger.exception("Boundary support check was unavailable for %s", claim.candidate_id)
             results.append(res)
             
         # Aggregate statistics

@@ -9,6 +9,28 @@ from src.api_ui import app
 
 
 class TestApiUI(unittest.TestCase):
+    def test_experiments_list_and_open_saved_run_with_real_catalog(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root) / "artifacts" / "experiments"
+            run = base / "runs" / "run40_test"
+            study = run / "exp01_fault_injection"
+            study.mkdir(parents=True)
+            (base / "active_run.json").write_text(json.dumps({"run_id": "run40_test"}), encoding="utf-8")
+            (study / "summary.json").write_text(json.dumps({"headline": {"accuracy": 0.75}}), encoding="utf-8")
+            (study / "records.jsonl").write_text(json.dumps({"example_id": "saved-example"}) + "\n", encoding="utf-8")
+            with patch("src.api_ui.PROJECT_ROOT", root):
+                listing = self.client.get("/ui/experiments")
+                self.assertEqual(listing.status_code, 200, listing.text)
+                self.assertEqual(len(listing.json()["experiments"]), 13)
+                detail = self.client.get("/ui/experiments/exp01_fault_injection")
+                self.assertEqual(detail.status_code, 200, detail.text)
+                self.assertEqual(detail.json()["summary"]["headline"]["accuracy"], 0.75)
+                self.assertEqual(detail.json()["records"][0]["example_id"], "saved-example")
+
     def setUp(self):
         self.client = TestClient(app)
         mm = MagicMock()
@@ -29,6 +51,14 @@ class TestApiUI(unittest.TestCase):
         self.assertIn("F_graphrag", body["arms"])
         self.assertIn("statutes", body["corpora"])
         self.assertIn("device", body)
+
+    def test_session_deletion_failure_returns_retryable_error(self):
+        with patch("src.chat_service.get_memory_manager") as manager:
+            manager.return_value.delete_session.side_effect = OSError("private database details")
+            response = self.client.delete("/ui/sessions/session1")
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("retry", response.json()["detail"])
+        self.assertNotIn("private database", response.text)
 
     def test_trace_metrics_unknown_trace_is_404(self):
         r = self.client.get("/ui/trace/no-such-trace-id/metrics")

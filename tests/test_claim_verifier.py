@@ -187,6 +187,23 @@ class TestClaimVerifier(unittest.TestCase):
         if os.path.exists(filepath):
             os.remove(filepath)
 
+    def test_boundary_confirmation_checks_individual_and_combined_passages(self):
+        claims = CandidateClaimSet("boundary")
+        claims.add_claim(CandidateClaim("c1", "boundary", "Partial claim.", "S1", 0, 0, 10, {}))
+        chunks = [RetrievedChunk("a", .9, 1, "1", "doc.txt", 0, "First half.", parent_document_id="doc"),
+                  RetrievedChunk("b", .8, 2, "1", "doc.txt", 1, "Second half.", parent_document_id="doc")]
+        with patch.object(self.verifier, "run_nli", side_effect=[
+            {"entailment": .3}, {"entailment": .4}, {"entailment": .95}]) as nli:
+            result = self.verifier.verify_all(claims, "boundary", chunks).results[0]
+        self.assertTrue(result.boundary_check["confirmed"])
+        self.assertEqual(nli.call_args.args[0], "First half.\nSecond half.")
+        self.assertEqual(result.boundary_check["individual_entailment"], [.3, .4])
+        with patch.object(self.verifier, "run_nli", side_effect=[
+            {"entailment": .95}, {"entailment": .2}]) as nli:
+            result = self.verifier.verify_all(claims, "boundary", chunks).results[0]
+        self.assertIsNone(result.boundary_check)
+        self.assertEqual(nli.call_count, 2)
+
     def test_ablation_max_pool_matches_production_probability_distribution(self):
         sentences = [
             EvidenceSentence('s1', 'ch1', 1, 'Neutral.', 0.3, 0.1, 0.6),
