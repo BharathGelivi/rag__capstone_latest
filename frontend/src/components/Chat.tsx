@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import AnswerTools from "./AnswerTools";
 import {
+  API_BASE,
   createSession,
   getConfig,
   getFrameworkPanel,
   getSessionMessages,
   getTrace,
   renameSession,
+  saveSessionReport,
   streamChat,
   type ChatEvent,
   type ClaimVerification,
@@ -753,6 +755,32 @@ function ActionBar({
 }
 
 /* ─── Chat ───────────────────────────────────────────────── */
+function SessionReportAction({ sessionId, disabled }: { sessionId: string; disabled: boolean }) {
+  const [saving, setSaving] = useState(false);
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+
+  async function save() {
+    setSaving(true);
+    setError("");
+    try {
+      setUrl((await saveSessionReport(sessionId)).url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the report.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <>
+    <button className="btn btn-secondary" disabled={disabled || saving} onClick={() => void save()}>
+      {saving ? "Saving report…" : url ? "Update session report" : "Save session report"}
+    </button>
+    {url && <a className="btn btn-secondary" href={`${API_BASE}${url}`} target="_blank" rel="noreferrer">Open saved report</a>}
+    {error && <span className="text-muted" role="alert">{error}</span>}
+  </>;
+}
+
 export default function Chat({ activeSessionId, onSessionCreated, onSessionRenamed, settings, onTurnDone }: ChatProps) {
   const [config, setConfig] = useState<Config | null>(null);
   const [configError, setConfigError] = useState(false);
@@ -1046,6 +1074,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
       <div className="topbar">
         <span className="topbar-title">Chat</span>
         <div className="topbar-controls">
+          {activeSessionId && <SessionReportAction key={activeSessionId} sessionId={activeSessionId} disabled={busy || isEmpty} />}
           <label className="chat-setting">
             Retrieval strategy
           <select

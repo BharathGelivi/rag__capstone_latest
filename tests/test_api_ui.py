@@ -2,6 +2,9 @@
 
 import unittest
 from unittest.mock import MagicMock, patch
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -97,6 +100,43 @@ class TestApiUI(unittest.TestCase):
         self.assertIn("reports", r.json())
         r = self.client.get("/ui/reports/../.env")
         self.assertEqual(r.status_code, 404)
+
+    def test_session_report_refresh_keeps_one_artifact_and_links_diagnostics(self):
+        session = SimpleNamespace(session_id="saved-chat", title="<Session>")
+        first = SimpleNamespace(question="<First>", answer="First answer", trace_id="trace1", timestamp="2026-11-17")
+        second = SimpleNamespace(question="Second question", answer="Second answer", trace_id=None, timestamp="2026-11-18")
+        trace = SimpleNamespace(retrieved_chunk_references=[{"chunk_id": "chunk1", "text": "<Evidence>"}])
+        with (
+            TemporaryDirectory() as root,
+            patch("src.api_ui.PROJECT_ROOT", root),
+            patch("src.api_ui.load_trace", return_value=trace),
+            patch("src.chat_service.get_memory_manager") as manager,
+        ):
+            manager.return_value.list_sessions.return_value = [session]
+            manager.return_value.get_session_memories.return_value = []
+            endpoint = "/ui/sessions/saved-chat/report"
+            self.assertEqual(self.client.post(endpoint).status_code, 409)
+            self.assertEqual(self.client.post("/ui/sessions/missing/report").status_code, 404)
+
+            report_dir = Path(root) / "artifacts" / "diagnostic_reports"
+            report_dir.mkdir(parents=True)
+            (report_dir / "trace1.html").write_text("Existing diagnostic", encoding="utf-8")
+            manager.return_value.get_session_memories.return_value = [first]
+            saved = self.client.post(endpoint)
+            self.assertEqual(saved.status_code, 200, saved.text)
+            url = saved.json()["url"]
+            self.assertNotIn("Second answer", self.client.get(url).text)
+
+            manager.return_value.get_session_memories.return_value = [first, second]
+            self.assertEqual(self.client.post(endpoint).json()["url"], url)
+            page = self.client.get(url).text
+            self.assertIn("&lt;Session&gt;", page)
+            self.assertIn("&lt;Evidence&gt;", page)
+            self.assertIn('href="trace1.html"', page)
+            self.assertLess(page.index("&lt;First&gt;"), page.index("Second answer"))
+            listing = self.client.get("/ui/reports").json()["reports"]
+            self.assertEqual([item["url"] for item in listing if item["session_id"] == "saved-chat"], [url])
+            self.assertEqual((report_dir / "trace1.html").read_text(encoding="utf-8"), "Existing diagnostic")
 
     def test_graph_memory_scope(self):
         r = self.client.get("/ui/graph", params={"scope": "memory", "max_nodes": 20})

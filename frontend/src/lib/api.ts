@@ -384,9 +384,14 @@ export async function getFrameworkPanel(traceId: string): Promise<FrameworkPanel
 export interface DiagnosticReport {
   name: string;
   trace_id: string;
+  session_id?: string | null;
   size_bytes: number;
   modified_at: number;
   url: string;
+}
+
+export function saveSessionReport(sessionId: string): Promise<{ url: string }> {
+  return replayResponse(`/ui/sessions/${encodeURIComponent(sessionId)}/report`, { method: "POST" });
 }
 
 export async function getDiagnosticReports(): Promise<DiagnosticReport[]> {

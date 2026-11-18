@@ -14,6 +14,8 @@ import logging
 import os
 import sys
 import re
+from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -32,9 +34,11 @@ from src.memory_graph import build_memory_graph_data
 from src.trace_metrics import compute_framework_panel
 from src.trace_replay import ReplayOptions, captured_messages, editable_prompt, load_trace, replay_trace, trace_choices
 from src.regression_cases import Expectations, capture_case, evaluate_case, load_cases, run_case, save_case
+from src.session_report import save_session_report
 from ui.components.graph import build_graph_data, build_legal_graph_data
 
 app = FastAPI(title="X-RAG UI backend")
+session_report_lock = Lock()
 from src.arena import router as arena_router
 app.include_router(arena_router)
 
@@ -478,10 +482,30 @@ def list_diagnostic_reports(limit: int = 50):
     return {"reports": [{
         "name": os.path.basename(path),
         "trace_id": os.path.splitext(os.path.basename(path))[0],
+        "session_id": os.path.basename(path).removeprefix("session.")[:-5]
+        if os.path.basename(path).startswith("session.") else None,
         "size_bytes": os.path.getsize(path),
         "modified_at": os.path.getmtime(path),
         "url": f"/ui/reports/{os.path.basename(path)}",
     } for path in paths]}
+
+
+@app.post("/ui/sessions/{session_id}/report")
+def create_session_report(session_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+        raise HTTPException(404, "Session not found")
+    mm = chat_service.get_memory_manager()
+    session = next((entry for entry in mm.list_sessions() if entry.session_id == session_id), None)
+    if session is None:
+        raise HTTPException(404, "Session not found")
+    with session_report_lock:
+        turns = mm.get_session_memories(session_id)
+        if not turns:
+            raise HTTPException(409, "This session has no saved turns to report.")
+        path = save_session_report(
+            Path(PROJECT_ROOT) / "artifacts" / "diagnostic_reports", session, turns, load_trace
+        )
+    return {"url": f"/ui/reports/{path.name}"}
 
 
 @app.get("/ui/reports/{name}")
@@ -491,7 +515,10 @@ def download_diagnostic_report(name: str):
     candidate = os.path.abspath(os.path.join(report_dir, name))
     if os.path.dirname(candidate) != report_dir or not candidate.endswith(".html") or not os.path.isfile(candidate):
         raise HTTPException(status_code=404, detail="Diagnostic report not found")
-    return FileResponse(candidate, media_type="text/html", content_disposition_type="inline")
+    return FileResponse(
+        candidate, media_type="text/html", content_disposition_type="inline",
+        headers={"Cache-Control": "no-store"} if name.startswith("session.") else None,
+    )
 
 
 @app.get("/ui/experiments")

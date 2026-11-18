@@ -215,6 +215,7 @@ body {
 .reports-content { padding: var(--space-8); overflow: auto; }
 .reports-list { display: grid; gap: var(--space-3); max-width: 920px; margin-top: var(--space-6); }
 .report-row { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.report-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 /* Minimal shell: a quiet navigation rail and clear content canvas. */
 .sidebar { width: 236px; background: #ffffff; color: var(--color-text); border-right: 1px solid var(--color-divider); padding: 18px 14px; }

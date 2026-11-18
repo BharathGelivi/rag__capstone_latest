@@ -200,7 +200,10 @@ export default function App() {
         )}
         {tab === "graph" && <Graph />}
         {tab === "memory" && <Memory />}
-        {tab === "reports" && <Reports />}
+        {tab === "reports" && <Reports sessions={sessions} onOpenSession={(id) => {
+          setActiveSessionId(id);
+          setTab("chat");
+        }} />}
         {tab === "experiments" && <Experiments />}
         {tab === "debug" && (
           <Debug settings={settings} onSettingsChange={setSettings} lastTraceId={lastTraceId} />
