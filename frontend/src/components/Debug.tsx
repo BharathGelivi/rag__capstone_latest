@@ -3,7 +3,7 @@ import TraceReplay from "./TraceReplay";
 import RegressionSuite from "./RegressionSuite";
 import StrategyArena from "./StrategyArena";
 import { useEffect, useState } from "react";
-import { getLatestTrace, getTrace, type TraceData } from "../lib/api";
+import { getDebugSuggestions, getLatestTrace, getTrace, type DebugSuggestions, type TraceData } from "../lib/api";
 import type { RuntimeSettings } from "../App";
 
 interface DebugProps {
@@ -21,6 +21,63 @@ function toggle(label: string, on: boolean, onClick: () => void) {
       </button>
     </div>
   );
+}
+
+function TuningSuggestions({ traceId }: { traceId?: string }) {
+  const [data, setData] = useState<DebugSuggestions>();
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    getDebugSuggestions(traceId, controller.signal)
+      .then(setData)
+      .catch(err => { if (!controller.signal.aborted) setError(err.message); });
+    return () => controller.abort();
+  }, [traceId, attempt]);
+
+  const priority = data?.ranked[0];
+  const current = data?.current;
+  return <>
+    <section className="card elev-sm" aria-label="Trace tuning suggestion">
+      <div className="card-kicker">Trace tuning suggestion</div>
+      {!data && !error && <p role="status">Checking tuning options…</p>}
+      {error && <p role="alert">{error} Compare a baseline run with a single retrieval setting changed and record evidence coverage and latency.</p>}
+      {current && <>
+        <strong>{current.title}</strong>
+        <p>{current.experiment}</p>
+        <p className="text-muted">{current.measure}</p>
+        <p className="text-muted">{{
+          diagnostic: "From a saved diagnostic plan",
+          llm: "LLM-proposed experiment based on trace telemetry",
+          trace_rule: "Trace-based baseline experiment",
+          fallback: "Baseline experiment. The tuning model was unavailable.",
+        }[current.source]}</p>
+      </>}
+      {data && !current && <p>Run a baseline chat question with known evidence to establish a tuning target.</p>}
+      {(error || current?.source === "fallback") && <button className="btn btn-secondary" onClick={() => {
+        setData(undefined);
+        setError("");
+        setAttempt(value => value + 1);
+      }}>Retry suggestion</button>}
+    </section>
+    <section className="card elev-sm" aria-label="Deployment tuning recommendation">
+      <div className="card-kicker">Deployment tuning recommendation</div>
+      {data && <p className="text-muted">Based on {data.trace_count} saved chat {data.trace_count === 1 ? "trace" : "traces"} in this deployment.</p>}
+      {priority && <>
+        <strong>{priority.suggestion.title}</strong>
+        <p>{priority.suggestion.experiment}</p>
+        <p className="text-muted">{priority.suggestion.measure}</p>
+        <details>
+          <summary>Suggestions across saved chats</summary>
+          <ul>{data.ranked.map(row => <li key={row.suggestion.title}>
+            {row.suggestion.title} · {row.trace_count} {row.trace_count === 1 ? "trace" : "traces"} · {row.evidence_count} from diagnostics or the tuning model
+          </li>)}</ul>
+        </details>
+      </>}
+      {data && !priority && <p>Start with a set of baseline questions and record whether the expected passages are retrieved.</p>}
+    </section>
+  </>;
 }
 
 export default function Debug({ settings, onSettingsChange, lastTraceId }: DebugProps) {
@@ -81,6 +138,7 @@ export default function Debug({ settings, onSettingsChange, lastTraceId }: Debug
         )}
       </div>
 
+      {!loading && <TuningSuggestions key={trace?.trace_id ?? "none"} traceId={trace?.trace_id} />}
       <TraceReplay key={trace?.trace_id ?? "none"} initialTraceId={trace?.trace_id} />
       <RegressionSuite />
       <StrategyArena key={`arena-${trace?.trace_id}`} traceId={trace?.trace_id}/>

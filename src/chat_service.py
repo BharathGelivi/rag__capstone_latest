@@ -569,6 +569,7 @@ def _run_chat_turn(
     # Memory provenance travels with the trace -- without it the turn is not
     # reproducible (the answer depended on state only the memory DB held).
     trace.diagnostics.update({
+        "trace_source": "chat",
         "retrieval_metadata": retrieval_result.retrieval_metadata,
         "memory_ids": [r.memory.memory_id for r in memory_results],
         "memory_kinds": [r.memory.kind for r in memory_results],

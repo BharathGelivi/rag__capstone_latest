@@ -30,6 +30,7 @@ if PROJECT_ROOT not in sys.path:
 from src import chat_service
 from src.research_dashboard import experiment_directory, research_summary
 from src.device import describe_device
+from src.debug_suggestions import suggest_tuning, summarize_chat_tuning
 from src.memory_graph import build_memory_graph_data
 from src.trace_metrics import compute_framework_panel
 from src.trace_replay import ReplayOptions, captured_messages, editable_prompt, load_trace, replay_trace, trace_choices
@@ -257,6 +258,28 @@ def latest_trace():
     if trace is None:
         raise HTTPException(status_code=404, detail="No traces recorded yet")
     return trace
+
+
+class DebugSuggestionRequest(BaseModel):
+    trace_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
+
+
+@app.post("/ui/debug/suggestions")
+def debug_suggestions(request: DebugSuggestionRequest):
+    artifact_dir = Path(PROJECT_ROOT) / "artifacts"
+    suggestion = None
+    if request.trace_id:
+        try:
+            trace = load_trace(request.trace_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Trace not found") from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, "Could not read the saved trace") from exc
+        suggestion = suggest_tuning(trace, artifact_dir, use_llm=True)
+    return {
+        "current": suggestion,
+        **summarize_chat_tuning(artifact_dir, request.trace_id, suggestion),
+    }
 
 
 @app.get("/ui/trace/{trace_id}")

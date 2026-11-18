@@ -394,6 +394,28 @@ export function saveSessionReport(sessionId: string): Promise<{ url: string }> {
   return replayResponse(`/ui/sessions/${encodeURIComponent(sessionId)}/report`, { method: "POST" });
 }
 
+export interface TuningSuggestion {
+  title: string;
+  experiment: string;
+  measure: string;
+  source: "diagnostic" | "llm" | "trace_rule" | "fallback";
+}
+
+export interface DebugSuggestions {
+  current: TuningSuggestion | null;
+  trace_count: number;
+  ranked: Array<{suggestion: TuningSuggestion; trace_count: number; evidence_count: number}>;
+}
+
+export function getDebugSuggestions(traceId: string | undefined, signal: AbortSignal): Promise<DebugSuggestions> {
+  return replayResponse("/ui/debug/suggestions", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({trace_id: traceId ?? null}),
+    signal,
+  });
+}
+
 export async function getDiagnosticReports(): Promise<DiagnosticReport[]> {
   const r = await fetch(`${API_BASE}/ui/reports`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
