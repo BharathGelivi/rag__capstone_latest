@@ -522,7 +522,7 @@ def create_session_report(session_id: str):
     if session is None:
         raise HTTPException(404, "Session not found")
     with session_report_lock:
-        turns = mm.get_session_memories(session_id)
+        turns = [entry for entry in mm.get_session_memories(session_id) if entry.kind == "turn"]
         if not turns:
             raise HTTPException(409, "This session has no saved turns to report.")
         path = save_session_report(

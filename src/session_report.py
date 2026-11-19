@@ -1,65 +1,111 @@
-"""Export the saved turns of a chat session as a standalone HTML report."""
+"""Export saved chat turns with the standalone diagnostic HTML renderer."""
 
-from html import escape
 import os
-from pathlib import Path
 import re
+from dataclasses import asdict
+from pathlib import Path
+from statistics import mean
 from tempfile import NamedTemporaryFile
 
-from scripts.generate_diagnostic_report import STYLE
+from scripts.generate_diagnostic_report import (
+    STYLE,
+    esc,
+    load_answer_correctness,
+    load_baseline_row,
+    load_chunk_records,
+    load_report,
+    render_report_body,
+)
+
+
+def _chat_diagnostics(trace):
+    diagnostics = trace.get("diagnostics") or {}
+    verification = diagnostics.get("claim_verification")
+    claims = (verification or {}).get("results", [])
+    entailment = [claim["entailment_score"] for claim in claims if claim.get("entailment_score") is not None]
+    return {
+        "executive_summary": {
+            "primary_issue": "Unavailable",
+            "total_claims": verification.get("claim_count", len(claims)) if verification is not None else None,
+            "supported_claims": sum(claim.get("status") == "SUPPORTED" for claim in claims),
+        },
+        "evaluation_metrics": {"average_entailment": mean(entailment) if entailment else None},
+        "root_cause_analysis": {},
+        "pipeline_overview": {"pipeline_stages": [
+            {
+                "stage": stage.replace("_", " ").upper(),
+                "status": {"completed": "COMPLETED", "failed": "FAIL", "partial": "PARTIAL"}.get(status, "UNKNOWN"),
+                "observation": "Recorded execution status",
+            }
+            for stage, status in trace.get("pipeline_stage_status", {}).items()
+        ]},
+        "evidence_analysis": [
+            {
+                "claim_id": claim.get("claim_id"),
+                "claim_text": claim.get("claim_text"),
+                "verification_status": claim.get("status"),
+                "supporting_chunk_id": claim.get("best_chunk_id"),
+                "supporting_chunk_rank": claim.get("best_chunk_rank"),
+                "supporting_evidence": claim.get("evidence_text"),
+            }
+            for claim in claims
+        ],
+    }
 
 
 def save_session_report(report_dir, session, turns, load_trace):
+    artifacts = report_dir.parent
     sections = []
     for number, turn in enumerate(turns, 1):
         trace_id = turn.trace_id or ""
-        trace_label = ""
-        evidence = []
+        trace = {"trace_id": "", "timestamp": turn.timestamp}
+        report = None
+        baseline = correctness = None
         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trace_id):
-            filename = f"{trace_id}.html"
-            trace_label = f"Trace <code>{trace_id}</code>"
-            if (report_dir / filename).is_file():
-                trace_label += f' · <a href="{filename}">Diagnostic report</a>'
             try:
-                trace = load_trace(trace_id)
+                trace = asdict(load_trace(trace_id))
             except (FileNotFoundError, TypeError, ValueError):
-                trace = None
-            if trace:
-                for chunk in trace.retrieved_chunk_references:
-                    reference = escape(str(chunk.get("chunk_id", "")))
-                    source = escape(str(chunk.get("source_file") or "Source unavailable"))
-                    passage = escape(str(chunk.get("text") or "Passage text unavailable"))
-                    evidence.append(f"<h4>{source} · {reference}</h4><pre>{passage}</pre>")
+                pass
+            if trace["trace_id"] == trace_id:
+                try:
+                    report = load_report(trace_id, artifacts / "reports")
+                except FileNotFoundError:
+                    pass
+                baseline = load_baseline_row(trace_id, artifacts / "benchmark_comparison" / "results.json")
+                correctness = load_answer_correctness(trace_id, artifacts / "answer_correctness")
 
-        passages = (
-            f"<details><summary>Retrieved passages ({len(evidence)})</summary>"
-            f"{''.join(evidence)}</details>"
-            if evidence else "<p>Captured passages unavailable.</p>"
-        )
-        sections.append(f"""
-<section id="turn-{number}">
-  <h2>Turn {number}</h2>
-  <p>{escape(str(turn.timestamp))} {trace_label}</p>
-  <h3>Question</h3><pre>{escape(turn.question)}</pre>
-  <h3>Answer</h3><pre>{escape(turn.answer)}</pre>
-  {passages}
-</section>""")
+        partial = report is None
+        if partial:
+            report = _chat_diagnostics(trace)
+        report["executive_summary"].update(question=turn.question, generated_answer=turn.answer)
+        refs = trace.get("retrieved_chunk_references", [])
+        records = load_chunk_records([ref["chunk_id"] for ref in refs], artifacts / "chunk_registry.json") if refs else {}
+        body = render_report_body(trace, report, baseline, correctness, partial=partial, chunk_records=records)
+        sections.append(f'<article id="turn-{number}" aria-label="Turn {number}">{body}</article>')
 
-    title = escape(session.title or "Untitled session")
+    title = esc(session.title or "Untitled session")
     contents = " · ".join(f'<a href="#turn-{n}">Turn {n}</a>' for n in range(1, len(turns) + 1))
     page = f"""<!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} | X-RAG Session Report</title>
-<style>{STYLE}
-pre {{ white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }}
-</style>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} | X-RAG Session Report</title>
+  <style>{STYLE}
+  nav a {{ color: var(--accent); }}
+  article {{ margin-top: 40px; }}
+  </style>
+</head>
+<body>
 <main class="page">
-  <header><div class="eyebrow">X-RAG Session Report</div><h1>{title}</h1></header>
-  <nav aria-label="Conversation turns">{contents}</nav>
+  <header>
+    <div class="eyebrow">X-RAG Session Report</div>
+    <h1>{title}</h1>
+    <nav aria-label="Conversation turns">{contents}</nav>
+  </header>
   {''.join(sections)}
 </main>
+</body>
 </html>
 """
     report_dir.mkdir(parents=True, exist_ok=True)

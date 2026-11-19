@@ -32,8 +32,8 @@ BASELINE_RESULTS_PATH = "artifacts/benchmark_comparison/results.json"
 CHUNK_REGISTRY_PATH = "artifacts/chunk_registry.json"
 
 
-def load_report(trace_id: str) -> Dict[str, Any]:
-    path = os.path.join(REPORTS_DIR, f"{trace_id}.json")
+def load_report(trace_id: str, reports_dir: Optional[str] = None) -> Dict[str, Any]:
+    path = os.path.join(reports_dir if reports_dir is not None else REPORTS_DIR, f"{trace_id}.json")
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -109,7 +109,7 @@ def render_stage_strip(pipeline_stages: List[Dict[str, Any]]) -> str:
           <div class="stage-name">{esc(stage.get('stage'))}</div>
           <div class="stage-status">{esc(status)}</div>
           <div class="stage-obs">{esc(stage.get('observation'))}</div>
-          <div class="stage-conf">confidence {esc(stage.get('confidence'))}</div>
+          {f'<div class="stage-conf">confidence {esc(stage["confidence"])}</div>' if stage.get("confidence") is not None else ""}
           {efficiency_html}
         </div>""")
     return "".join(cards)
@@ -222,6 +222,7 @@ def render_chunk_mapping(chunk_refs: List[Dict[str, Any]], chunk_records: Dict[s
     for ref in chunk_refs:
         chunk_id = ref.get("chunk_id")
         record = chunk_records.get(chunk_id, {})
+        passage = ref.get("text") or record.get("text")
         rows.append(f"""
         <details class="chunk-detail">
           <summary>
@@ -241,9 +242,8 @@ def render_chunk_mapping(chunk_refs: List[Dict[str, Any]], chunk_records: Dict[s
             <div class="claim-field"><b>Parent document:</b> <span class="mono">{esc(ref.get('parent_document_id'))}</span></div>
             <div class="claim-field"><b>Chunk index in document:</b> <span class="mono">{esc(ref.get('chunk_index'))}</span></div>
             {f'''<div class="claim-field"><b>Configured chunk size / overlap:</b> <span class="mono">{esc(record.get("configured_chunk_size"))} / {esc(record.get("configured_chunk_overlap"))}</span></div>
-            <div class="claim-field"><b>Character span:</b> <span class="mono">{esc(record.get("character_start"))} - {esc(record.get("character_end"))} ({esc(record.get("text_length"))} chars)</span></div>
-            <div class="claim-field"><b>Full chunk text:</b></div>
-            <pre class="evidence-text">{esc(record.get("text"))}</pre>''' if record else '<div class="claim-field muted">Full chunk record not found in current chunk_registry.json (corpus may have been re-ingested since this trace ran).</div>'}
+            <div class="claim-field"><b>Character span:</b> <span class="mono">{esc(record.get("character_start"))} - {esc(record.get("character_end"))} ({esc(record.get("text_length"))} chars)</span></div>''' if record else ''}
+            {f'<div class="claim-field"><b>Full chunk text:</b></div><pre class="evidence-text">{esc(passage)}</pre>' if passage else '<div class="claim-field muted">Full chunk record not found in current chunk_registry.json (corpus may have been re-ingested since this trace ran).</div>'}
           </div>
         </details>""")
     return "".join(rows)
@@ -363,6 +363,7 @@ h1 { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif; font-s
 .case .q-label, .case .a-label { font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 700; color: var(--accent); margin-bottom: 6px; }
 .case .q-text { font-size: 1.05rem; font-weight: 500; margin-bottom: 18px; }
 .case .a-text { font-size: 0.95rem; color: var(--ink-soft); }
+.case .q-text, .case .a-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 details { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
 details > summary { cursor: pointer; padding: 14px 18px; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 10px; }
 details > summary::-webkit-details-marker { display: none; }
@@ -434,6 +435,23 @@ def generate_report(
     baseline_row: Optional[Dict[str, Any]],
     answer_correctness: Optional[Dict[str, Any]] = None,
 ) -> str:
+    return f"""<title>X-RAG Diagnostic Report — {esc(trace["trace_id"])}</title>
+<style>{STYLE}</style>
+<div class="page">
+{render_report_body(trace, report, baseline_row, answer_correctness)}
+</div>
+"""
+
+
+def render_report_body(
+    trace: Dict[str, Any],
+    report: Dict[str, Any],
+    baseline_row: Optional[Dict[str, Any]],
+    answer_correctness: Optional[Dict[str, Any]] = None,
+    *,
+    partial: bool = False,
+    chunk_records: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> str:
     trace_id = trace["trace_id"]
     exec_summary = report["executive_summary"]
     metrics = report["evaluation_metrics"]
@@ -443,8 +461,8 @@ def generate_report(
     corrective_actions = report.get("corrective_actions", [])
     chunk_refs = trace.get("retrieved_chunk_references", [])
 
-    chunk_ids = [ref["chunk_id"] for ref in chunk_refs]
-    chunk_records = load_chunk_records(chunk_ids)
+    if chunk_records is None:
+        chunk_records = load_chunk_records([ref["chunk_id"] for ref in chunk_refs])
 
     config = trace.get("configuration_snapshot", {})
     exec_stats = trace.get("execution_statistics", {})
@@ -452,14 +470,17 @@ def generate_report(
     health = exec_summary.get("overall_health_score")
     health_pct = f"{health * 100:.0f}%" if isinstance(health, (int, float)) else "N/A"
 
-    return f"""<title>X-RAG Diagnostic Report — {esc(trace_id)}</title>
-<style>{STYLE}</style>
-<div class="page">
+    unavailable = '<p class="muted">No analysis was saved for this turn.</p>'
+    claims_label = f"{esc(exec_summary.get('supported_claims'))} / {esc(exec_summary.get('total_claims'))}"
+    if exec_summary.get("total_claims") is None:
+        claims_label = "N/A"
+    evidence_count = "" if claims_label == "N/A" else f" ({len(evidence_analysis)} atomic claims)"
 
+    return f"""
   <header>
     <div class="eyebrow">X-RAG Diagnostic Framework — Full Report</div>
     <h1>{esc(exec_summary.get('question'))}</h1>
-    <p class="dek">Trace <span class="mono">{esc(trace_id)}</span>, generated {esc(trace.get('timestamp'))}.</p>
+    <p class="dek">{f'Trace <span class="mono">{esc(trace_id)}</span>, generated {esc(trace.get("timestamp"))}.' if trace_id else "No trace was saved for this turn."}</p>
     <div class="meta-row">
       <span><b>Generator:</b> {esc(config.get('llm_model'))}</span>
       <span><b>Embedding:</b> {esc(config.get('embedding_model'))}</span>
@@ -473,7 +494,7 @@ def generate_report(
     <div class="summary-grid">
       <div class="summary-tile"><div class="tile-label">Overall Health</div><div class="tile-val mono">{health_pct}</div></div>
       <div class="summary-tile"><div class="tile-label">Primary Issue</div><div class="tile-val mono">{esc(exec_summary.get('primary_issue'))}</div></div>
-      <div class="summary-tile"><div class="tile-label">Claims Supported</div><div class="tile-val mono">{esc(exec_summary.get('supported_claims'))} / {esc(exec_summary.get('total_claims'))}</div></div>
+      <div class="summary-tile"><div class="tile-label">Claims Supported</div><div class="tile-val mono">{claims_label}</div></div>
       <div class="summary-tile"><div class="tile-label">Avg. Entailment</div><div class="tile-val mono">{fmt_score(metrics.get('average_entailment'))}</div></div>
     </div>
   </section>
@@ -496,37 +517,37 @@ def generate_report(
         <div class="claim-field"><b>Total pipeline time:</b> <span class="mono">{fmt_score(exec_stats.get('total_pipeline_time'), 3)}s</span></div>
         <div class="claim-field"><b>Pre-rerank candidate pool:</b> <span class="mono">{esc(exec_stats.get('pre_rerank_candidate_pool_size'))}</span> chunks (BM25 + dense, before RRF fusion and reranking)</div>
         <div class="claim-field"><b>Full prompt sent to the generator:</b></div>
-        <pre class="evidence-text">{esc(trace.get('prompt_snapshot'))}</pre>
+        <pre class="evidence-text">{esc(trace.get('prompt_snapshot') or 'Prompt unavailable.')}</pre>
       </div>
     </details>
   </section>
 
   <section>
-    <div class="section-title">Claim Decomposition &amp; Verification ({len(evidence_analysis)} atomic claims)</div>
-    {render_claim_rows(evidence_analysis)}
+    <div class="section-title">Claim Decomposition &amp; Verification{evidence_count}</div>
+    {render_claim_rows(evidence_analysis) or (unavailable if partial and exec_summary.get("total_claims") is None else "")}
   </section>
 
   <section>
     <div class="section-title">Chunk Mapping &amp; Provenance</div>
-    {render_chunk_mapping(chunk_refs, chunk_records)}
+    {render_chunk_mapping(chunk_refs, chunk_records) or '<p class="muted">No passages were captured for this turn.</p>'}
   </section>
 
   <section>
     <div class="section-title">X-RAG Stage Attribution</div>
     <div class="stage-strip">
-      {render_stage_strip(pipeline_stages)}
+      {render_stage_strip(pipeline_stages) or unavailable}
     </div>
   </section>
 
   <section>
     <div class="section-title">Root Cause Reasoning Chain</div>
-    {render_reasoning_chain(rca.get('reasoning_chain', []))}
+    {render_reasoning_chain(rca.get('reasoning_chain', [])) if rca.get('reasoning_chain') else unavailable}
     <div class="claim-field" style="margin-top: 10px;"><b>Diagnosis confidence:</b> <span class="mono">{fmt_score(rca.get('diagnosis_confidence'))}</span></div>
   </section>
 
   <section>
     <div class="section-title">Corrective Actions</div>
-    {render_corrective_actions(corrective_actions)}
+    {unavailable if partial else render_corrective_actions(corrective_actions)}
   </section>
 
   <section>
@@ -548,10 +569,9 @@ def generate_report(
 
   <footer>
     <span>X-RAG Diagnostic Framework</span>
-    <span>Trace {esc(trace_id)} -- generated from a live run, not simulated data</span>
+    {f'<span>Trace {esc(trace_id)} -- generated from a live run, not simulated data</span>' if trace_id else ''}
   </footer>
 
-</div>
 """
 
 
