@@ -131,15 +131,30 @@ class TestApiUI(unittest.TestCase):
         r = self.client.get("/ui/reports/../.env")
         self.assertEqual(r.status_code, 404)
 
-    def test_session_report_refresh_keeps_one_artifact_and_links_diagnostics(self):
+    def test_session_report_refresh_generates_diagnostics_and_keeps_one_artifact(self):
+        from src.rag_trace import RAGTrace
+
         session = SimpleNamespace(session_id="saved-chat", title="<Session>")
-        first = SimpleNamespace(question="<First>", answer="First answer", trace_id="trace1", timestamp="2026-11-17")
-        second = SimpleNamespace(question="Second question", answer="Second answer", trace_id=None, timestamp="2026-11-18")
-        trace = SimpleNamespace(retrieved_chunk_references=[{"chunk_id": "chunk1", "text": "<Evidence>"}])
+        first = SimpleNamespace(question="<First>", answer="First answer", trace_id="trace1", timestamp="2026-11-17", kind="turn")
+        second = SimpleNamespace(question="Second question", answer="Second answer", trace_id=None, timestamp="2026-11-18", kind="turn")
+        trace = RAGTrace(
+            trace_id="trace1", trace_version="1.0", pipeline_version="1.0", framework_version="1.0",
+            timestamp=first.timestamp, question=first.question, generated_answer=first.answer,
+            prompt_snapshot="", prompt_length=0,
+            retrieved_chunk_references=[{"chunk_id": "chunk1", "text": "<Evidence>", "similarity_score": 0.9}],
+            configuration_snapshot={}, execution_statistics={}, pipeline_stage_status={},
+            diagnostics={"claim_verification": {"claim_count": 1, "results": [
+                {"claim_id": "c1", "claim_text": "First answer", "status": "UNSUPPORTED", "entailment_score": 0.1},
+            ]}},
+        )
+        panel = {"note": "Project-computed comparison", "families": [{"family": "RAGAS", "metrics": [
+            {"key": "answer_relevancy", "label": "Answer Relevancy", "value": 0.82},
+        ]}]}
         with (
             TemporaryDirectory() as root,
             patch("src.api_ui.PROJECT_ROOT", root),
             patch("src.api_ui.load_trace", return_value=trace),
+            patch("src.api_ui.compute_framework_panel", return_value=panel) as evaluate,
             patch("src.chat_service.get_memory_manager") as manager,
         ):
             manager.return_value.list_sessions.return_value = [session]
@@ -162,7 +177,11 @@ class TestApiUI(unittest.TestCase):
             page = self.client.get(url).text
             self.assertIn("&lt;Session&gt;", page)
             self.assertIn("&lt;Evidence&gt;", page)
-            self.assertIn('href="trace1.html"', page)
+            self.assertIn("UNSUPPORTED_GENERATION", page)
+            self.assertIn("Primary root cause:", page)
+            self.assertIn("0.820", page)
+            self.assertIn("Project-computed comparison", page)
+            evaluate.assert_called_with("trace1")
             self.assertLess(page.index("&lt;First&gt;"), page.index("Second answer"))
             listing = self.client.get("/ui/reports").json()["reports"]
             self.assertEqual([item["url"] for item in listing if item["session_id"] == "saved-chat"], [url])

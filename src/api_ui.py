@@ -536,7 +536,7 @@ def create_session_report(session_id: str):
         if not turns:
             raise HTTPException(409, "This session has no saved turns to report.")
         path = save_session_report(
-            Path(PROJECT_ROOT) / "artifacts" / "diagnostic_reports", session, turns, load_trace
+            Path(PROJECT_ROOT) / "artifacts" / "diagnostic_reports", session, turns, load_trace, compute_framework_panel
         )
     return {"url": f"/ui/reports/{path.name}"}
 

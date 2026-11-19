@@ -767,7 +767,7 @@ function SessionReportAction({ sessionId, disabled }: { sessionId: string; disab
 
   return <>
     <button className="btn btn-secondary" disabled={disabled || saving} onClick={() => void save()}>
-      {saving ? "Saving report…" : url ? "Update session report" : "Save session report"}
+      {saving ? "Analyzing turns and saving report…" : url ? "Update session report" : "Save session report"}
     </button>
     {url && <a className="btn btn-secondary" href={`${API_BASE}${url}`} target="_blank" rel="noreferrer">Open saved report</a>}
     {error && <span className="text-muted" role="alert">{error}</span>}

@@ -1,5 +1,6 @@
 """Export saved chat turns with the standalone diagnostic HTML renderer."""
 
+import logging
 import os
 import re
 from dataclasses import asdict
@@ -16,6 +17,15 @@ from scripts.generate_diagnostic_report import (
     load_report,
     render_report_body,
 )
+from src.claims import ClaimSet
+from src.corrective_action_engine import CorrectiveActionEngine
+from src.pipeline_state_analyzer import PipelineStateAnalyzer
+from src.ragas_metrics import RagasMetrics, compute_faithfulness_strict
+from src.report_builder import ReportBuilder
+from src.root_cause_reasoner import RootCauseReasoner
+from src.trace_metrics import stored_verification_summary
+
+logger = logging.getLogger(__name__)
 
 
 def _chat_diagnostics(trace):
@@ -53,7 +63,25 @@ def _chat_diagnostics(trace):
     }
 
 
-def save_session_report(report_dir, session, turns, load_trace):
+def _build_diagnostics(trace, verification, panel):
+    states = PipelineStateAnalyzer().analyze(trace, ClaimSet(trace_id=trace.trace_id), verification)
+    cause = RootCauseReasoner().analyze(states)
+    actions = CorrectiveActionEngine().generate(cause, psm=states, config_snapshot=trace.configuration_snapshot)
+    scores = {metric["key"]: metric["value"] for family in (panel or {}).get("families", [])
+              if family["family"] == "RAGAS" for metric in family["metrics"]}
+    metrics = RagasMetrics(
+        faithfulness=scores.get("faithfulness", compute_faithfulness_strict(verification)),
+        answer_relevancy=scores.get("answer_relevancy"),
+        context_precision=scores.get("context_precision"),
+    )
+    context_scores = {metric["key"]: metric["value"] for family in (panel or {}).get("families", [])
+                      if family["family"] == "ARES" for metric in family["metrics"]}
+    metrics.context_relevancy = context_scores.get("context_relevance")
+    return asdict(ReportBuilder().build(trace=trace, psm=states, rca=cause, cap=actions,
+                                       verification=verification, ragas_metrics=metrics))
+
+
+def save_session_report(report_dir, session, turns, load_trace, compute_framework_panel):
     artifacts = report_dir.parent
     sections = []
     for number, turn in enumerate(turns, 1):
@@ -61,9 +89,11 @@ def save_session_report(report_dir, session, turns, load_trace):
         trace = {"trace_id": "", "timestamp": turn.timestamp}
         report = None
         baseline = correctness = None
+        panel = None
         if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", trace_id):
             try:
-                trace = asdict(load_trace(trace_id))
+                captured = load_trace(trace_id)
+                trace = asdict(captured)
             except (FileNotFoundError, TypeError, ValueError):
                 pass
             if trace["trace_id"] == trace_id:
@@ -73,6 +103,18 @@ def save_session_report(report_dir, session, turns, load_trace):
                     pass
                 baseline = load_baseline_row(trace_id, artifacts / "benchmark_comparison" / "results.json")
                 correctness = load_answer_correctness(trace_id, artifacts / "answer_correctness")
+                if report is None:
+                    verification = stored_verification_summary(trace)
+                    try:
+                        panel = compute_framework_panel(trace_id)
+                        if verification is None and panel and panel.get("verification") is not None:
+                            captured = load_trace(trace_id)
+                            trace = asdict(captured)
+                            verification = stored_verification_summary(trace)
+                    except Exception:
+                        logger.exception("Could not compute report metrics for trace %s", trace_id)
+                    if verification is not None:
+                        report = _build_diagnostics(captured, verification, panel)
 
         partial = report is None
         if partial:
@@ -80,7 +122,8 @@ def save_session_report(report_dir, session, turns, load_trace):
         report["executive_summary"].update(question=turn.question, generated_answer=turn.answer)
         refs = trace.get("retrieved_chunk_references", [])
         records = load_chunk_records([ref["chunk_id"] for ref in refs], artifacts / "chunk_registry.json") if refs else {}
-        body = render_report_body(trace, report, baseline, correctness, partial=partial, chunk_records=records)
+        body = render_report_body(trace, report, baseline, correctness, partial=partial,
+                                  chunk_records=records, framework_panel=panel)
         sections.append(f'<article id="turn-{number}" aria-label="Turn {number}">{body}</article>')
 
     title = esc(session.title or "Untitled session")

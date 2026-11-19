@@ -26,7 +26,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from src import chat_service
-from src.claim_verifier import ClaimVerifier, VerificationSummary
+from src.claim_verifier import ClaimVerifier, VerificationResult, VerificationStatus, VerificationSummary
 from src.rag_trace import RAGTrace
 from src.rag_eval import METRIC_PROVENANCE, compute_metric_panel
 
@@ -73,6 +73,8 @@ def invalidate_framework_panel(trace_id):
 def _trace_file(trace_id: str) -> Optional[str]:
     trace_dir = os.path.join(chat_service.PROJECT_ROOT, "artifacts", "rag_traces")
     matches = glob.glob(os.path.join(trace_dir, "*", f"trace_{trace_id}.json"))
+    matches += [p for p in (os.path.join(trace_dir, f"{trace_id}.json"),
+                            os.path.join(trace_dir, f"trace_{trace_id}.json")) if os.path.isfile(p)]
     return matches[0] if matches else None
 
 
@@ -93,7 +95,7 @@ def _rebuild_chunks(trace: RAGTrace) -> list:
     return captured
 
 
-def _summary_from_stored_payload(trace_json: Dict[str, Any]) -> Optional[VerificationSummary]:
+def stored_verification_summary(trace_json: Dict[str, Any]) -> Optional[VerificationSummary]:
     """Rebuild a VerificationSummary from the claim payload a live turn (or a
     previous on-demand run) persisted into the trace file."""
     payload = trace_json.get("claim_verification") or (trace_json.get("diagnostics") or {}).get("claim_verification")
@@ -118,6 +120,28 @@ def _summary_from_stored_payload(trace_json: Dict[str, Any]) -> Optional[Verific
         average_entailment_score=round(sum(entailments) / len(entailments), 4)
         if entailments else 0.0,
         total_verification_latency_ms=0.0,  # not persisted per-claim; unknown here
+        results=[
+            VerificationResult(
+                verification_id=r.get("verification_id") or r["claim_id"],
+                trace_id=trace_json["trace_id"],
+                claim_id=r["claim_id"],
+                claim_text=r.get("claim_text") or "",
+                verification_status=VerificationStatus(r["status"]),
+                verification_reason=r.get("reason") or "",
+                confidence=r.get("confidence") or 0.0,
+                best_chunk_id=r.get("best_chunk_id"),
+                best_chunk_rank=r.get("best_chunk_rank"),
+                best_chunk_score=None,
+                best_sentence_id=None,
+                evidence_text=r.get("evidence_text"),
+                entailment_score=r.get("entailment_score") or 0.0,
+                contradiction_score=r.get("contradiction_score") or 0.0,
+                neutral_score=r.get("neutral_score") or 0.0,
+                verified_by=r.get("verified_by") or "nli",
+                boundary_check=r.get("boundary_check"),
+            )
+            for r in results if r.get("status") in counts and r.get("claim_id")
+        ],
     )
 
 
@@ -169,7 +193,7 @@ def compute_framework_panel(trace_id: str) -> Optional[Dict[str, Any]]:
     # same deep analysis now and persist it back (computed once, cached once).
     computed_claims = False
     analysis_error = None
-    summary = _summary_from_stored_payload(trace_json)
+    summary = stored_verification_summary(trace_json)
     if summary is None:
         try:
             evidence = chunks + chat_service.captured_memory_chunks(trace)
@@ -184,7 +208,7 @@ def compute_framework_panel(trace_id: str) -> Optional[Dict[str, Any]]:
         else:
             trace_json["claim_verification"] = outcome["verification"]
             chat_service.persist_deep_analysis(path, outcome)
-            summary = _summary_from_stored_payload(trace_json)
+            summary = stored_verification_summary(trace_json)
             computed_claims = True
 
     panel = compute_metric_panel(

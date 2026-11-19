@@ -256,7 +256,7 @@ def render_reasoning_chain(chain: List[str]) -> str:
 
 def render_corrective_actions(actions: List[Dict[str, Any]]) -> str:
     if not actions:
-        return "<p class='muted'>None recommended -- pipeline is healthy for this example.</p>"
+        return "<p class='muted'>None recommended by the diagnosis.</p>"
     items = []
     for action in actions:
         priority = action.get("priority", "")
@@ -271,7 +271,17 @@ def render_corrective_actions(actions: List[Dict[str, Any]]) -> str:
     return "".join(items)
 
 
-def render_framework_comparison(xrag_score: Optional[float], xrag_cause: str, baseline_row: Optional[Dict[str, Any]]) -> str:
+def render_framework_comparison(xrag_score: Optional[float], xrag_cause: str, baseline_row: Optional[Dict[str, Any]], framework_panel=None) -> str:
+    if baseline_row is None and framework_panel:
+        cards = []
+        for family in framework_panel.get("families", []):
+            rows = "".join(
+                f'<div class="metric-row"><span>{esc(metric["label"])}</span><span class="mono m-val">{fmt_score(metric["value"])}</span></div>'
+                for metric in family["metrics"]
+            )
+            cards.append(f'<div class="fw-card"><div class="fw-name">{esc(family["family"])}<span class="tag">X-RAG metrics</span></div><div class="metric-list">{rows}</div></div>')
+        if cards:
+            return f'<p class="muted">{esc(framework_panel.get("note"))}</p><div class="fw-grid">{"".join(cards)}</div>'
     if baseline_row is None:
         return "<p class='muted'>No baseline comparison row found for this trace_id in artifacts/benchmark_comparison/results.json -- run scripts/run_baseline_comparison.py to populate it.</p>"
 
@@ -451,6 +461,7 @@ def render_report_body(
     *,
     partial: bool = False,
     chunk_records: Optional[Dict[str, Dict[str, Any]]] = None,
+    framework_panel: Optional[Dict[str, Any]] = None,
 ) -> str:
     trace_id = trace["trace_id"]
     exec_summary = report["executive_summary"]
@@ -563,7 +574,7 @@ def render_report_body(
   <section>
     <div class="section-title">Cross-Framework Comparison</div>
     <div class="scroll-x">
-      {render_framework_comparison(metrics.get('average_entailment'), rca.get('primary_cause', 'UNKNOWN'), baseline_row)}
+      {render_framework_comparison(metrics.get('average_entailment'), rca.get('primary_cause', 'UNKNOWN'), baseline_row, framework_panel)}
     </div>
   </section>
 
