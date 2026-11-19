@@ -1,5 +1,6 @@
 """Fast, no-browser checks for src/api_ui.py -- run before the Playwright e2e suite."""
 
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
@@ -66,6 +67,35 @@ class TestApiUI(unittest.TestCase):
     def test_trace_metrics_unknown_trace_is_404(self):
         r = self.client.get("/ui/trace/no-such-trace-id/metrics")
         self.assertEqual(r.status_code, 404)
+
+    def test_saved_trace_recovers_evaluation_and_keeps_recorded_measurements(self):
+        trace = {
+            "trace_id": "saved",
+            "generated_answer": "The statute requires written notice [Chunk-ID: notice].",
+            "retrieved_chunk_references": [{"chunk_id": "notice"}],
+            "prompt_snapshot": "--- Context chunk 1 [Chunk-ID: notice] ---\nThe statute requires written notice.",
+            "diagnostics": {"claim_verification": {"results": [
+                {"status": "SUPPORTED"}, {"status": "UNSUPPORTED"},
+            ]}},
+        }
+        with TemporaryDirectory() as root, patch("src.api_ui.PROJECT_ROOT", root):
+            path = Path(root) / "artifacts" / "rag_traces" / "saved.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(trace), encoding="utf-8")
+            response = self.client.get("/ui/trace/saved")
+            self.assertEqual(response.status_code, 200, response.text)
+            evaluation = response.json()["evaluation"]
+            self.assertEqual(evaluation["groundedness"], 1.0)
+            self.assertEqual(evaluation["faithfulness"], 0.5)
+            self.assertEqual(evaluation["citation_precision"], 1.0)
+            self.assertNotIn("answer_relevancy", evaluation)
+            self.assertNotIn("device", evaluation)
+
+            trace["diagnostics"]["evaluation"] = {"answer_relevancy": 0.75, "device": "CPU"}
+            path.write_text(json.dumps(trace), encoding="utf-8")
+            evaluation = self.client.get("/ui/trace/saved").json()["evaluation"]
+            self.assertEqual(evaluation["answer_relevancy"], 0.75)
+            self.assertEqual(evaluation["device"], "CPU")
 
     def test_trace_metrics_returns_panel_shape(self):
         fake_panel = {

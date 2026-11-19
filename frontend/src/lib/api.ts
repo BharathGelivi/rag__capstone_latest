@@ -275,6 +275,17 @@ export function analyzeEvidence(traceId: string): Promise<EvidenceDebugData> {
   return replayResponse(`/ui/trace/${encodeURIComponent(traceId)}/evidence/analyze`, {method: "POST"});
 }
 
+export interface ChatEvaluation {
+  groundedness?: number | null;
+  faithfulness?: number | null;
+  answer_relevancy?: number | null;
+  context_precision?: number | null;
+  context_relevancy?: number | null;
+  citation_precision?: number | null;
+  citations_found?: number;
+  device?: string;
+}
+
 export interface TraceData {
   trace_id: string;
   question: string;
@@ -284,6 +295,7 @@ export interface TraceData {
   execution_statistics: Record<string, unknown>;
   configuration_snapshot: Record<string, unknown>;
   retrieved_chunk_references: TraceChunkReference[];
+  evaluation?: ChatEvaluation;
   // Only present when the turn ran with deep_analysis=true -- see
   // chat_service.py's post-hoc patch of the saved trace file.
   claim_verification?: { claim_count: number; results: ClaimVerification[] };

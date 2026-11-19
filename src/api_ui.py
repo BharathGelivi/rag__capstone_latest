@@ -28,6 +28,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src import chat_service
+from src.chat_evaluation import evaluate_answer
 from src.research_dashboard import experiment_directory, research_summary
 from src.device import describe_device
 from src.debug_suggestions import suggest_tuning, summarize_chat_tuning
@@ -303,11 +304,20 @@ def get_trace(trace_id: str):
     # New traces capture full evidence; backfill previews only for legacy
     # traces so a current registry can never overwrite captured text.
     refs = trace.get("retrieved_chunk_references") or []
+    # Recover historical scores from captured evidence before adding previews
+    # from current registries, which may have changed since the answer.
+    snapshot = dict(re.findall(
+        r"--- Context chunk \d+ \[Chunk-ID: ([^\]]*)\] ---\n(.*?)(?=\n--- Context chunk |\n\nQuestion: |\Z)",
+        trace.get("prompt_snapshot") or "", re.DOTALL)) if any(not ref.get("text") for ref in refs) else {}
+    evaluation_refs = [
+        {**ref, "text": ref.get("text") or ref.get("chunk_text") or snapshot.get(ref.get("chunk_id"), "").strip()}
+        for ref in refs
+    ]
+    trace["evaluation"] = {
+        **evaluate_answer(trace.get("generated_answer") or "", evaluation_refs, trace.get("claim_verification")),
+        **(diagnostics.get("evaluation") or {}),
+    }
     if refs:
-        # Captured prompt evidence remains valid when registries are replaced.
-        snapshot = dict(re.findall(
-            r"--- Context chunk \d+ \[Chunk-ID: ([^\]]*)\] ---\n(.*?)(?=\n--- Context chunk |\n\nQuestion: |\Z)",
-            trace.get("prompt_snapshot") or "", re.DOTALL))
         for ref in refs:
             if not ref.get("text") and ref.get("chunk_id") in snapshot:
                 ref["text"] = snapshot[ref["chunk_id"]].strip()[:400]

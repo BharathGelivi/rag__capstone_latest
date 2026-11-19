@@ -11,6 +11,7 @@ import {
   saveSessionReport,
   streamChat,
   type ChatEvent,
+  type ChatEvaluation,
   type ClaimVerification,
   type Config,
   type FrameworkPanel,
@@ -47,7 +48,7 @@ interface MemoryRecall {
   final_score: number;
 }
 
-interface MsgMeta {
+interface MsgMeta extends ChatEvaluation {
   arm?: string;
   corpus?: string;
   search_query?: string;
@@ -60,14 +61,6 @@ interface MsgMeta {
   total_time?: number;
   recalled_memories?: MemoryRecall[];
   trace_id?: string;
-  groundedness?: number;
-  faithfulness?: number;
-  answer_relevancy?: number;
-  context_precision?: number;
-  context_relevancy?: number;
-  citation_precision?: number;
-  citations_found?: number;
-  device?: string;
   // Model reasoning (gated arms only -- see REASONING_ARMS in chat_service.py)
   reasoning?: string;
   reasoningDone?: boolean;
@@ -552,7 +545,7 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
                   { label: "Answer Relevancy", value: meta.answer_relevancy,
                     desc: "Semantic cosine alignment between user question and generated answer." },
                   { label: "Context Precision", value: meta.context_precision,
-                    desc: "Mean cross-encoder score across the ranked evidence." },
+                    desc: "Requires relevance judgments. See the Frameworks tab for judge-based context precision." },
                   { label: "Citation Precision", value: meta.citation_precision,
                     desc: "Share of the answer's chunk citations that exist in the retrieved evidence." },
                 ]).map((card) => (
@@ -564,9 +557,9 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
                         which is metrics-dressing. "—" is the honest display. */}
                     <div
                       className="eval-value"
-                      style={card.value != null && card.label !== "Word overlap" ? { color: card.value >= 0.8 ? "#10a37f" : "#f59e0b" } : {}}
+                      style={card.value == null ? { fontSize: 14 } : card.label !== "Word overlap" ? { color: card.value >= 0.8 ? "#10a37f" : "#f59e0b" } : undefined}
                     >
-                      {card.value != null ? `${(card.value * 100).toFixed(0)}%` : "—"}
+                      {card.value != null ? `${(card.value * 100).toFixed(0)}%` : "Unavailable"}
                     </div>
                     <div className="eval-desc">{card.desc}</div>
                   </div>
@@ -574,13 +567,13 @@ function DetailsPanel({ meta, defaultOpen }: { meta: MsgMeta; defaultOpen?: bool
                 <div className="eval-card">
                   <div className="eval-label">Device</div>
                   <div className="eval-value" style={{ fontSize: 13, color: "#10a37f" }}>
-                    {meta.device ?? "—"}
+                    {meta.device ?? "Unavailable"}
                   </div>
                   <div className="eval-desc">The machine this answer was computed on (reported by the backend, not assumed).</div>
                 </div>
               </div>
               <div className="eval-note">
-                ⚡ These are fast heuristics computed at answer time. For judge-based
+                ⚡ These scores use captured evidence and measurements from the original answer. Older runs may lack some measurements. For judge-based
                 RAGAS / RAGChecker / ARES-style scores on this answer, open the
                 <strong> 🏁 Frameworks</strong> tab.
               </div>
@@ -839,9 +832,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
         setMessages(msgs.map((m) => ({ role: m.role, content: m.content })));
         // Re-fetching a session (page reload, or navigating to another view
         // and back to Chat -- Chat unmounts, so this whole effect re-runs)
-        // only gets role/content back; chunks/timings/eval scores only ever
-        // lived in this component's in-memory state during the live SSE
-        // turn. trace_id is the one thing that survives, so hydrate each
+        // gets message text and trace IDs. Hydrate each
         // historical assistant message's Details panel from its saved
         // RAGTrace instead of leaving it permanently blank.
         msgs.forEach((m, i) => {
@@ -856,6 +847,7 @@ export default function Chat({ activeSessionId, onSessionCreated, onSessionRenam
                 ...next[i],
                 meta: {
                   ...next[i].meta,
+                  ...trace.evaluation,
                   trace_id: trace.trace_id,
                   chunks: (trace.retrieved_chunk_references || []).map((c) => ({
                     chunk_id: c.chunk_id,

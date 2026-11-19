@@ -26,6 +26,7 @@ PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/..")
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from src.chat_evaluation import evaluate_answer
 from src.device import describe_device
 from src.memory.memory_manager import MemoryManager
 from src.cache_utils import serialized_cache
@@ -627,7 +628,6 @@ def _run_chat_turn(
     yield strategy_event
 
     # Step 5: Compute Standard Evaluation Metrics (Groundedness, Faithfulness, Relevancy, Precision)
-    import re
     import numpy as np
 
     def cosine_sim(a, b):
@@ -653,53 +653,22 @@ def _run_chat_turn(
     except Exception:
         pass
 
-    # 2. Context Precision & Context Relevancy
-    scores = [c.similarity_score for c in retrieval_result.retrieved_chunks]
-    context_precision = None
-    context_relevancy = None
-
-    # 3. Citation Analysis
-    chunk_pattern = re.compile(r'\[(?:Chunk-ID:\s*|Chunk:\s*)([a-f0-9\-]+)\]', re.IGNORECASE)
-    cited_ids = set(chunk_pattern.findall(generation_result.generated_answer))
-    retrieved_ids = set(retrieval_result.retrieved_chunk_ids)
-    if cited_ids:
-        grounded_citations = cited_ids.intersection(retrieved_ids)
-        citation_precision = round(len(grounded_citations) / len(cited_ids), 4)
-    else:
-        citation_precision = None
-
-    # 4. Groundedness & Faithfulness
-    ans_text = generation_result.generated_answer.lower()
-    combined_context = " ".join(c.chunk_text.lower() for c in retrieval_result.retrieved_chunks)
-    sentences = [s.strip() for s in re.split(r'[.!?\n]+', ans_text) if len(s.strip()) > 15]
-    grounded_count = 0
-    stopwords = {'that', 'this', 'with', 'from', 'which', 'under', 'shall', 'have', 'been', 'about', 'there', 'their'}
-    for s in sentences:
-        words = [w for w in re.findall(r'\b\w{4,}\b', s) if w not in stopwords]
-        if words:
-            overlap = sum(1 for w in words if w in combined_context) / len(words)
-            if overlap >= 0.45:
-                grounded_count += 1
-    groundedness = round(grounded_count / len(sentences), 4) if sentences else None
-    faithfulness = None
-    if deep_analysis and strategy_event.get("verification", {}).get("results"):
-        results = strategy_event["verification"]["results"]
-        faithfulness = round(sum(r["status"] == "SUPPORTED" for r in results) / len(results), 4)
-
-    # Query the actual device rather than hardcoding a specific GPU model --
-    # the old string claimed a 4060 on every machine that had any CUDA device.
-    device_name = describe_device()
+    captured_evaluation = {"answer_relevancy": answer_relevancy, "device": describe_device()}
+    try:
+        with TRACE_WRITE_LOCK:
+            with open(trace_path, encoding="utf-8") as file:
+                trace_json = json.load(file)
+            trace_json.setdefault("diagnostics", {})["evaluation"] = captured_evaluation
+            save_json(trace_json, trace_path)
+    except OSError:
+        logger.exception("Could not persist chat evaluation")
 
     yield {
         "event": "evaluation",
-        "groundedness": groundedness,
-        "faithfulness": faithfulness,
-        "answer_relevancy": answer_relevancy,
-        "context_precision": context_precision,
-        "context_relevancy": context_relevancy,
-        "citation_precision": citation_precision,
-        "citations_found": len(cited_ids),
-        "device": device_name,
+        **evaluate_answer(trace.generated_answer, trace.retrieved_chunk_references, strategy_event.get("verification")),
+        **captured_evaluation,
+        "context_precision": None,
+        "context_relevancy": None,
         "metric_methods": {"groundedness": "lexical_overlap_heuristic", "answer_relevancy": "embedding_cosine",
                            "faithfulness": "verified_supported_claim_fraction", "context_precision": "not_computed",
                            "context_relevancy": "not_computed"},
